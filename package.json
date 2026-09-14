@@ -1,0 +1,18 @@
+{
+  "name": "whatsapp-gemini-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Cloud API bot powered by Google Gemini",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "axios": "^1.8.0",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0"
+  }
+}
