@@ -37,7 +37,7 @@ const OWNER_WHATSAPP_NUMBER = "233547100951";
 // ============================================================
 
 const BUSINESS_RULES = `
-You are the AI business assistant for Noah.
+You are the AI business assistant for Stony_Tech.
 
 YOUR MAIN PURPOSE:
 You represent Noah on WhatsApp.
