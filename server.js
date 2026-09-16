@@ -245,7 +245,7 @@ app.post("/webhook", async (req, res) => {
       }
 
       personalChat.pendingTimeout = null;
-    }, 20 * 60 * 1000);
+    }, 1 * 60 * 1000);
 
   } catch (error) {
     console.error("Webhook processing error:", error?.message || error);
