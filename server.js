@@ -26,7 +26,7 @@ const {
   WHATSAPP_VERIFY_TOKEN,
 } = process.env;
 
-if (!GEMINI_API_KEY)            console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GEMINI_API_KEY)          console.warn("⚠️  Missing GEMINI_API_KEY");
 if (!WHATSAPP_ACCESS_TOKEN)    console.warn("⚠️  Missing WHATSAPP_ACCESS_TOKEN");
 if (!WHATSAPP_PHONE_NUMBER_ID) console.warn("⚠️  Missing WHATSAPP_PHONE_NUMBER_ID");
 if (!WHATSAPP_VERIFY_TOKEN)    console.warn("⚠️  Missing WHATSAPP_VERIFY_TOKEN");
@@ -46,7 +46,7 @@ const AUTH_FOLDER       = "./baileys_auth";
 // ============================================================
 
 const BUSINESS_RULES = `
-You are the AI business assistant for Stony_Tech.
+You are the personal business assistant for Stony_Tech.
 
 YOUR MAIN PURPOSE:
 You represent Stony_Tech on WhatsApp.
@@ -90,7 +90,7 @@ IMPORTANT BUSINESS RULES:
 - Do not promise a delivery date.
 - Do not claim that a project has already been approved.
 - Do not pretend to be a human.
-- You are Stony_Tech's AI assistant.
+- You are Stony's personal assistant.
 - Be friendly, professional and natural.
 - Keep WhatsApp replies reasonably short.
 - Do not overwhelm customers with too many questions at once.
@@ -172,9 +172,11 @@ function detectInterest(text) {
     "i want to get started","how can i get started",
     "let's do it","lets do it",
     "i want to work with you",
+    "i want to talk to him",
     "i need your service","i want your service",
     "how much will it cost","what will it cost",
     "how much is it","i want to order one"
+    
   ];
   return patterns.some(p => msg.includes(p));
 }
@@ -334,17 +336,20 @@ async function startPersonalNumber() {
     }
   });
 
-  // ── Incoming messages on personal number (Updated & Relaxed) ───────────────
+  // ── Incoming messages on personal number ──────────────────────────────
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    console.log("🔍 RAW EVENT FIRED:", JSON.stringify(messages[0]?.key));
+
     for (const msg of messages) {
       try {
         if (!msg.message || msg.key.remoteJid === "status@broadcast") continue;
 
         const jid = msg.key.remoteJid;
-        if (!jid.endsWith("@s.whatsapp.net")) continue;
+        // Accept both standard JIDs and multi-device LIDs
+        if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@lid")) continue;
 
         const fromMe = msg.key.fromMe;
-        const from = jid.replace("@s.whatsapp.net", "");
+        const from = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
         
         const text = msg.message?.conversation ||
                      msg.message?.extendedTextMessage?.text ||
