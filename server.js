@@ -38,8 +38,9 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 // ============================================================
 
 const OWNER_NUMBER      = "233547100951";
-const FALLBACK_DELAY_MS = 7 * 60 * 1000; // 1 minute for testing
-const AUTH_FOLDER       = "./baileys_auth";
+const FALLBACK_DELAY_MS = 7 * 60 * 1000; // 7 minutes
+const AUTH_FOLDER_MAIN  = "./baileys_auth";
+const AUTH_FOLDER_SEC   = "./baileys_auth_second";
 
 // ============================================================
 // BUSINESS RULES
@@ -137,7 +138,7 @@ function getBotConversation(phone) {
 }
 
 // ============================================================
-// PERSONAL NUMBER CONVERSATIONS (Baileys)
+// PERSONAL & SECONDARY NUMBER CONVERSATIONS (Baileys)
 // ============================================================
 
 const personalChats = new Map();
@@ -176,7 +177,6 @@ function detectInterest(text) {
     "i need your service","i want your service",
     "how much will it cost","what will it cost",
     "how much is it","i want to order one"
-    
   ];
   return patterns.some(p => msg.includes(p));
 }
@@ -279,30 +279,33 @@ async function sendBotMessage(to, body) {
 }
 
 // ============================================================
-// BAILEYS SOCKET (personal number)
+// MULTI-BAILEY'S SETUP (Handles both personal numbers concurrently)
 // ============================================================
 
-let sock = null;
-let qrString = null;
-let personalConnected = false;
+const baileysSessions = {
+  main:   { phone: "233547100951", qr: null, connected: false, sock: null },
+  second: { phone: "233533161186", qr: null, connected: false, sock: null }
+};
 
-async function startPersonalNumber() {
-  if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNumbers = []) {
+  if (!fs.existsSync(authFolder)) fs.mkdirSync(authFolder, { recursive: true });
 
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+  const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version } = await fetchLatestBaileysVersion();
 
-  console.log(`\n🔧 Baileys version: ${version.join(".")}`);
+  console.log(`\n🔧 Baileys version (${phoneNumber}): ${version.join(".")}`);
 
-  sock = makeWASocket({
+  const sock = makeWASocket({
     version,
     auth: state,
     printQRInTerminal: false,
     logger: require("pino")({ level: "silent" }),
-    browser: ["Stony_Tech Bot", "Chrome", "1.0.0"],
+    browser: [`Stony_Tech Bot (${phoneNumber})`, "Chrome", "1.0.0"],
     syncFullHistory: false,
     markOnlineOnConnect: false
   });
+
+  baileysSessions[sessionKey].sock = sock;
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -310,46 +313,48 @@ async function startPersonalNumber() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      qrString = qr;
-      console.log("\n📱 SCAN THIS QR CODE WITH YOUR PERSONAL NUMBER (0547100951):");
-      console.log("Open WhatsApp → Linked Devices → Link a Device → Scan\n");
+      baileysSessions[sessionKey].qr = qr;
+      console.log(`\n📱 SCAN THIS QR CODE FOR (${phoneNumber}):`);
       qrcode.generate(qr, { small: true });
     }
 
     if (connection === "open") {
-      personalConnected = true;
-      qrString = null;
-      console.log("✅ Personal number connected via Baileys!");
+      baileysSessions[sessionKey].connected = true;
+      baileysSessions[sessionKey].qr = null;
+      console.log(`✅ Number ${phoneNumber} connected via Baileys!`);
     }
 
     if (connection === "close") {
-      personalConnected = false;
+      baileysSessions[sessionKey].connected = false;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log(`⚠️  Personal number disconnected. Status: ${statusCode}. Reconnect: ${shouldReconnect}`);
+      console.log(`⚠️  Number ${phoneNumber} disconnected. Status: ${statusCode}. Reconnect: ${shouldReconnect}`);
       if (shouldReconnect) {
-        console.log("🔄 Reconnecting in 5 seconds...");
-        setTimeout(startPersonalNumber, 5000);
+        console.log(`🔄 Reconnecting ${phoneNumber} in 5 seconds...`);
+        setTimeout(() => startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNumbers), 5000);
       } else {
-        console.log("❌ Logged out. Delete baileys_auth folder and restart to re-scan QR.");
+        console.log(`❌ Logged out ${phoneNumber}. Delete ${authFolder} folder and restart to re-scan QR.`);
       }
     }
   });
 
-  // ── Incoming messages on personal number ──────────────────────────────
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-
+  // ── Incoming messages for this specific client ──────────────────────────────
+  sock.ev.on("messages.upsert", async ({ messages }) => {
     for (const msg of messages) {
       try {
         if (!msg.message || msg.key.remoteJid === "status@broadcast") continue;
 
         const jid = msg.key.remoteJid;
-        // Accept both standard JIDs and multi-device LIDs
         if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@lid")) continue;
 
         const fromMe = msg.key.fromMe;
         const from = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
         
+        // 🚫 Check if this number is in the Ignore List (will silently skip)
+        if (ignoredNumbers.includes(from)) {
+          continue; 
+        }
+
         const text = msg.message?.conversation ||
                      msg.message?.extendedTextMessage?.text ||
                      msg.message?.imageMessage?.caption ||
@@ -357,10 +362,10 @@ async function startPersonalNumber() {
 
         if (!text.trim()) continue;
 
-        // ── Noah replied manually ─────────────────────────
+        // ── You replied manually ─────────────────────────
         if (fromMe) {
           const chat = getPersonalChat(from);
-          console.log(`✍️ Noah manually replied to ${from}`);
+          console.log(`✍️ Manual reply sent to ${from} via ${phoneNumber}`);
           chat.ownerReplied = true;
           chat.botActive = false;
           if (chat.fallbackTimer) {
@@ -372,7 +377,7 @@ async function startPersonalNumber() {
         }
 
         // ── Customer message received ───────────────────────
-        console.log(`📨 [PERSONAL] Captured message from ${from}: ${text}`);
+        console.log(`📨 [${phoneNumber}] Captured message from ${from}: ${text}`);
         const chat = getPersonalChat(from);
         chat.messages.push({ role: "customer", text: text.trim() });
         chat.lastCustomerMessage = text.trim();
@@ -387,39 +392,39 @@ async function startPersonalNumber() {
           }
           chat.messages.push({ role: "assistant", text: reply });
           if (chat.messages.length > 20) chat.messages = chat.messages.slice(-20);
-          console.log(`🤖 [PERSONAL BOT] Reply to ${from}: ${reply}`);
+          console.log(`🤖 [BOT via ${phoneNumber}] Reply to ${from}: ${reply}`);
           await sock.sendMessage(jid, { text: reply });
           continue;
         }
 
-        // Bot not active yet → start or reset the 1 min fallback timer
+        // Bot not active yet → start or reset the 7 min fallback timer
         chat.ownerReplied = false;
-        startFallbackTimer(from, jid, chat);
-        console.log(`⏳ Fallback timer running (1 min) for ${from}`);
+        startFallbackTimer(from, jid, chat, sock, phoneNumber);
+        console.log(`⏳ Fallback timer running (7 min) for ${from} on ${phoneNumber}`);
 
       } catch (err) {
-        console.error("Personal message handler error:", err?.message);
+        console.error(`Message handler error on ${phoneNumber}:`, err?.message);
       }
     }
   });
 }
 
 // ============================================================
-// 1 MIN FALLBACK TIMER
+// 7 MIN FALLBACK TIMER
 // ============================================================
 
-function startFallbackTimer(from, jid, chat) {
+function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
   if (chat.fallbackTimer) clearTimeout(chat.fallbackTimer);
 
   chat.fallbackTimer = setTimeout(async () => {
-    if (!chat.ownerReplied && sock) {
-      console.log(`⏰ 20 min passed — bot taking over personal chat with ${from}`);
+    if (!chat.ownerReplied && activeSock) {
+      console.log(`⏰ 7 min passed — bot taking over chat with ${from} via ${phoneNumber}`);
       chat.botActive = true;
 
       const unavailableMsg = "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you please?";
 
       try {
-        await sock.sendMessage(jid, { text: unavailableMsg });
+        await activeSock.sendMessage(jid, { text: unavailableMsg });
         chat.messages.push({ role: "assistant", text: unavailableMsg });
 
         if (chat.lastCustomerMessage) {
@@ -430,7 +435,7 @@ function startFallbackTimer(from, jid, chat) {
             geminiReply = "I'm here to help! Could you tell me about your business and what you need? 😊";
           }
           chat.messages.push({ role: "assistant", text: geminiReply });
-          await sock.sendMessage(jid, { text: geminiReply });
+          await activeSock.sendMessage(jid, { text: geminiReply });
         }
       } catch (err) {
         console.error("Fallback timer send error:", err?.message);
@@ -502,27 +507,54 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ============================================================
-// QR CODE PAGE
+// DUAL QR CODE PAGE
 // ============================================================
 
 app.get("/qr", (req, res) => {
-  if (personalConnected) {
-    return res.send("<h2>✅ Personal number is connected!</h2>");
+  let html = `
+    <html>
+      <head>
+        <title>Scan WhatsApp QRs</title>
+        <style>
+          body { font-family: sans-serif; text-align: center; padding: 20px; background: #f4f4f9;}
+          .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: inline-block; margin: 10px; width: 320px; vertical-align: top;}
+          img { border-radius: 10px; border: 1px solid #ddd; padding: 10px; background: white;}
+          h2 { color: #333; margin-bottom: 5px; }
+          p.status { color: #555; font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <h1>📱 Connect Your Numbers</h1>
+        <p>Open WhatsApp → Linked Devices → Link a Device → Scan</p>
+  `;
+
+  // Main Number Card
+  html += `<div class="card"><h2>Main Number</h2><p>+${baileysSessions.main.phone}</p>`;
+  if (baileysSessions.main.connected) {
+    html += `<p class="status" style="color: green;">✅ Connected!</p>`;
+  } else if (baileysSessions.main.qr) {
+    html += `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(baileysSessions.main.qr)}" />`;
+  } else {
+    html += `<p class="status">⏳ Generating QR...</p>`;
   }
-  if (qrString) {
-    return res.send(`
-      <html>
-        <head><title>Scan QR</title></head>
-        <body style="text-align:center;font-family:sans-serif;padding:40px">
-          <h2>📱 Scan with your personal WhatsApp (0547100951)</h2>
-          <p>Open WhatsApp → Linked Devices → Link a Device → Scan</p>
-          <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrString)}" />
-          <p><small>Refresh this page if QR expired</small></p>
-        </body>
-      </html>
-    `);
+  html += `</div>`;
+
+  // Second Number Card
+  html += `<div class="card"><h2>Second Number</h2><p>+${baileysSessions.second.phone}</p>`;
+  if (baileysSessions.second.connected) {
+    html += `<p class="status" style="color: green;">✅ Connected!</p>`;
+  } else if (baileysSessions.second.qr) {
+    html += `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(baileysSessions.second.qr)}" />`;
+  } else {
+    html += `<p class="status">⏳ Generating QR...</p>`;
   }
-  return res.send("<h2>⏳ QR not ready yet. Refresh in 5 seconds...</h2><script>setTimeout(()=>location.reload(),5000)</script>");
+  html += `</div>`;
+
+  html += `<p><small>This page auto-refreshes every 10 seconds.</small></p>
+      <script>setTimeout(() => { location.reload(); }, 10000);</script>
+      </body></html>`;
+  
+  res.send(html);
 });
 
 // ============================================================
@@ -533,8 +565,10 @@ app.get("/", (req, res) => {
   res.status(200).send(`
     <html><body style="font-family:sans-serif;padding:40px">
     <h2>🚀 Stony_Tech AI Bot is running</h2>
-    <p>Bot number: ✅ Active</p>
-    <p>Personal number: ${personalConnected ? "✅ Connected" : "❌ Not connected — <a href='/qr'>Click here to scan QR</a>"}</p>
+    <p>Meta Bot: ✅ Active</p>
+    <p>Main Number (+${baileysSessions.main.phone}): ${baileysSessions.main.connected ? "✅ Connected" : "❌ Not connected"}</p>
+    <p>Second Number (+${baileysSessions.second.phone}): ${baileysSessions.second.connected ? "✅ Connected" : "❌ Not connected"}</p>
+    <p><a href='/qr'>Click here to view/scan QR codes</a></p>
     </body></html>
   `);
 });
@@ -543,19 +577,27 @@ app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     bot: "Stony_Tech AI Bot",
-    personalConnected,
+    mainConnected: baileysSessions.main.connected,
+    secondConnected: baileysSessions.second.connected,
     botChats: botConversations.size,
     personalChats: personalChats.size
   });
 });
 
 // ============================================================
-// START
+// START SERVER & BOTH BAILEYS CLIENTS
 // ============================================================
 
 app.listen(PORT, () => {
   console.log(`🚀 Stony_Tech AI Bot running on port ${PORT}`);
-  console.log(`👉 Open https://your-render-url.onrender.com/qr to scan QR code`);
-});
+  console.log(`👉 Open your /qr route to scan codes for both numbers`);
 
-startPersonalNumber();
+  // Start Main Personal Number
+  startBaileysClient("main", baileysSessions.main.phone, AUTH_FOLDER_MAIN, []);
+
+  // Start Second Number (Silently ignores the 2 numbers you specified)
+  startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC, [
+    "233535840183", 
+    "233267103209"
+  ]);
+});
