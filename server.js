@@ -414,10 +414,10 @@ function startFallbackTimer(from, jid, chat) {
 
   chat.fallbackTimer = setTimeout(async () => {
     if (!chat.ownerReplied && sock) {
-      console.log(`⏰ 1 min passed — bot taking over personal chat with ${from}`);
+      console.log(`⏰ 20 min passed — bot taking over personal chat with ${from}`);
       chat.botActive = true;
 
-      const unavailableMsg = "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you today?";
+      const unavailableMsg = "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you please?";
 
       try {
         await sock.sendMessage(jid, { text: unavailableMsg });
