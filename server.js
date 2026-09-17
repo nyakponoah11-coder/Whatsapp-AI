@@ -293,8 +293,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
   const { version } = await fetchLatestBaileysVersion();
 
-  console.log(`\n🔧 Baileys version (${phoneNumber}): ${version.join(".")}`);
-
   const sock = makeWASocket({
     version,
     auth: state,
@@ -365,7 +363,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         // ── You replied manually ─────────────────────────
         if (fromMe) {
           const chat = getPersonalChat(from);
-          console.log(`✍️ Manual reply sent to ${from} via ${phoneNumber}`);
           chat.ownerReplied = true;
           chat.botActive = false;
           if (chat.fallbackTimer) {
@@ -377,7 +374,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         }
 
         // ── Customer message received ───────────────────────
-        console.log(`📨 [${phoneNumber}] Captured message from ${from}: ${text}`);
         const chat = getPersonalChat(from);
         chat.messages.push({ role: "customer", text: text.trim() });
         chat.lastCustomerMessage = text.trim();
@@ -392,7 +388,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
           }
           chat.messages.push({ role: "assistant", text: reply });
           if (chat.messages.length > 20) chat.messages = chat.messages.slice(-20);
-          console.log(`🤖 [BOT via ${phoneNumber}] Reply to ${from}: ${reply}`);
           await sock.sendMessage(jid, { text: reply });
           continue;
         }
@@ -400,7 +395,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         // Bot not active yet → start or reset the 7 min fallback timer
         chat.ownerReplied = false;
         startFallbackTimer(from, jid, chat, sock, phoneNumber);
-        console.log(`⏳ Fallback timer running (7 min) for ${from} on ${phoneNumber}`);
 
       } catch (err) {
         console.error(`Message handler error on ${phoneNumber}:`, err?.message);
@@ -474,8 +468,6 @@ app.post("/webhook", async (req, res) => {
     const userText = message.text?.body?.trim();
     if (!from || !userText) return;
 
-    console.log(`📨 [BOT NUMBER] From ${from}: ${userText}`);
-
     const conversation = getBotConversation(from);
     conversation.messages.push({ role: "customer", text: userText });
     updateLeadInformation(conversation, userText);
@@ -498,7 +490,6 @@ app.post("/webhook", async (req, res) => {
     conversation.messages.push({ role: "assistant", text: reply });
     if (conversation.messages.length > 20) conversation.messages = conversation.messages.slice(-20);
 
-    console.log(`🤖 [BOT NUMBER] Reply to ${from}: ${reply}`);
     await sendBotMessage(from, reply);
 
   } catch (err) {
@@ -507,7 +498,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ============================================================
-// DUAL QR CODE PAGE
+// DUAL QR CODE PAGE (Auto-refreshes every 10 minutes)
 // ============================================================
 
 app.get("/qr", (req, res) => {
@@ -550,8 +541,8 @@ app.get("/qr", (req, res) => {
   }
   html += `</div>`;
 
-  html += `<p><small>This page auto-refreshes every 10 seconds.</small></p>
-      <script>setTimeout(() => { location.reload(); }, 10000);</script>
+  html += `<p><small>This page auto-refreshes every 10 minutes.</small></p>
+      <script>setTimeout(() => { location.reload(); }, 600000);</script>
       </body></html>`;
   
   res.send(html);
