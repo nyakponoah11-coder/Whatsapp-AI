@@ -305,10 +305,27 @@ async function sendBotMessage(to, body) {
 // WHATSAPP-WEB.JS CLIENT (personal number)
 // ============================================================
 
+// Find Chrome executable — works on Render, Railway, local
+function findChrome() {
+  const paths = [
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/snap/bin/chromium"
+  ];
+  const fs = require("fs");
+  for (const p of paths) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null; // let Puppeteer find it itself
+}
+
 const wwjsClient = new Client({
   authStrategy: new LocalAuth({ clientId: "stonytech-personal" }),
   puppeteer: {
     headless: true,
+    executablePath: findChrome() || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
