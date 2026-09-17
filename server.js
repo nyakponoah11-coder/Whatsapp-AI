@@ -338,7 +338,6 @@ async function startPersonalNumber() {
 
   // ── Incoming messages on personal number ──────────────────────────────
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    console.log("🔍 RAW EVENT FIRED:", JSON.stringify(messages[0]?.key));
 
     for (const msg of messages) {
       try {
