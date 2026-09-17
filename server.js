@@ -26,7 +26,7 @@ const {
   WHATSAPP_VERIFY_TOKEN,
 } = process.env;
 
-if (!GEMINI_API_KEY)           console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GEMINI_API_KEY)            console.warn("⚠️  Missing GEMINI_API_KEY");
 if (!WHATSAPP_ACCESS_TOKEN)    console.warn("⚠️  Missing WHATSAPP_ACCESS_TOKEN");
 if (!WHATSAPP_PHONE_NUMBER_ID) console.warn("⚠️  Missing WHATSAPP_PHONE_NUMBER_ID");
 if (!WHATSAPP_VERIFY_TOKEN)    console.warn("⚠️  Missing WHATSAPP_VERIFY_TOKEN");
@@ -37,9 +37,9 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 // CONFIG
 // ============================================================
 
-const OWNER_NUMBER     = "233547100951";
-const FALLBACK_DELAY_MS = 1 * 60 * 1000; // 20 minutes
-const AUTH_FOLDER      = "./baileys_auth";
+const OWNER_NUMBER      = "233547100951";
+const FALLBACK_DELAY_MS = 1 * 60 * 1000; // 1 minute for testing
+const AUTH_FOLDER       = "./baileys_auth";
 
 // ============================================================
 // BUSINESS RULES
@@ -264,7 +264,7 @@ async function notifyOwner(from, userText, conversation) {
 }
 
 // ============================================================
-// SEND MESSAGE via Meta API (bot number — unchanged)
+// SEND MESSAGE via Meta API (bot number)
 // ============================================================
 
 async function sendBotMessage(to, body) {
@@ -277,7 +277,7 @@ async function sendBotMessage(to, body) {
 }
 
 // ============================================================
-// BAILEYS SOCKET (personal number — no Chrome needed!)
+// BAILEYS SOCKET (personal number)
 // ============================================================
 
 let sock = null;
@@ -295,17 +295,15 @@ async function startPersonalNumber() {
   sock = makeWASocket({
     version,
     auth: state,
-    printQRInTerminal: false, // we handle QR ourselves
+    printQRInTerminal: false,
     logger: require("pino")({ level: "silent" }),
     browser: ["Stony_Tech Bot", "Chrome", "1.0.0"],
     syncFullHistory: false,
     markOnlineOnConnect: false
   });
 
-  // ── Save credentials whenever they update ──────────────
   sock.ev.on("creds.update", saveCreds);
 
-  // ── Connection updates ─────────────────────────────────
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -336,30 +334,31 @@ async function startPersonalNumber() {
     }
   });
 
-  // ── Incoming messages on personal number ───────────────
+  // ── Incoming messages on personal number (Updated & Relaxed) ───────────────
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
-
     for (const msg of messages) {
       try {
-        // Only private chats
-        if (!msg.key.remoteJid?.endsWith("@s.whatsapp.net")) continue;
+        if (!msg.message || msg.key.remoteJid === "status@broadcast") continue;
+
+        const jid = msg.key.remoteJid;
+        if (!jid.endsWith("@s.whatsapp.net")) continue;
 
         const fromMe = msg.key.fromMe;
-        const jid    = msg.key.remoteJid;
-        const from   = jid.replace("@s.whatsapp.net", "");
-        const text   = msg.message?.conversation ||
-                       msg.message?.extendedTextMessage?.text ||
-                       "";
+        const from = jid.replace("@s.whatsapp.net", "");
+        
+        const text = msg.message?.conversation ||
+                     msg.message?.extendedTextMessage?.text ||
+                     msg.message?.imageMessage?.caption ||
+                     "";
 
         if (!text.trim()) continue;
 
         // ── Noah replied manually ─────────────────────────
         if (fromMe) {
           const chat = getPersonalChat(from);
-          console.log(`✍️  Noah replied to ${from}`);
+          console.log(`✍️ Noah manually replied to ${from}`);
           chat.ownerReplied = true;
-          chat.botActive    = false;
+          chat.botActive = false;
           if (chat.fallbackTimer) {
             clearTimeout(chat.fallbackTimer);
             chat.fallbackTimer = null;
@@ -368,8 +367,8 @@ async function startPersonalNumber() {
           continue;
         }
 
-        // ── Customer message ──────────────────────────────
-        console.log(`📨 [PERSONAL] From ${from}: ${text}`);
+        // ── Customer message received ───────────────────────
+        console.log(`📨 [PERSONAL] Captured message from ${from}: ${text}`);
         const chat = getPersonalChat(from);
         chat.messages.push({ role: "customer", text: text.trim() });
         chat.lastCustomerMessage = text.trim();
@@ -389,10 +388,10 @@ async function startPersonalNumber() {
           continue;
         }
 
-        // Bot not active → start/reset 20 min timer
+        // Bot not active yet → start or reset the 1 min fallback timer
         chat.ownerReplied = false;
         startFallbackTimer(from, jid, chat);
-        console.log(`⏳ 20 min timer started for ${from}`);
+        console.log(`⏳ Fallback timer running (1 min) for ${from}`);
 
       } catch (err) {
         console.error("Personal message handler error:", err?.message);
@@ -402,7 +401,7 @@ async function startPersonalNumber() {
 }
 
 // ============================================================
-// 20 MIN FALLBACK TIMER
+// 1 MIN FALLBACK TIMER
 // ============================================================
 
 function startFallbackTimer(from, jid, chat) {
@@ -452,7 +451,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================================================
-// BOT NUMBER WEBHOOK (Meta — exactly as before)
+// BOT NUMBER WEBHOOK (Meta)
 // ============================================================
 
 app.post("/webhook", async (req, res) => {
@@ -499,7 +498,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ============================================================
-// QR CODE PAGE (open in browser to scan)
+// QR CODE PAGE
 // ============================================================
 
 app.get("/qr", (req, res) => {
