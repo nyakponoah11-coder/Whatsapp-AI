@@ -38,7 +38,7 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 // ============================================================
 
 const OWNER_NUMBER     = "233547100951";
-const FALLBACK_DELAY_MS = 20 * 60 * 1000; // 20 minutes
+const FALLBACK_DELAY_MS = 1 * 60 * 1000; // 20 minutes
 const AUTH_FOLDER      = "./baileys_auth";
 
 // ============================================================
