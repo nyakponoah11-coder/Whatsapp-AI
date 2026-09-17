@@ -3,8 +3,16 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { GoogleGenAI } = require("@google/genai");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const makeWASocket = require("@whiskeysockets/baileys").default;
+const {
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion
+} = require("@whiskeysockets/baileys");
+const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -26,11 +34,12 @@ if (!WHATSAPP_VERIFY_TOKEN)    console.warn("⚠️  Missing WHATSAPP_VERIFY_TOK
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 // ============================================================
-// OWNER PERSONAL NUMBER
+// CONFIG
 // ============================================================
 
-const OWNER_NUMBER = "233547100951";
+const OWNER_NUMBER     = "233547100951";
 const FALLBACK_DELAY_MS = 20 * 60 * 1000; // 20 minutes
+const AUTH_FOLDER      = "./baileys_auth";
 
 // ============================================================
 // BUSINESS RULES
@@ -111,7 +120,7 @@ actually notified them.
 `.trim();
 
 // ============================================================
-// BOT NUMBER CONVERSATIONS (Meta API — unchanged)
+// BOT NUMBER CONVERSATIONS (Meta API)
 // ============================================================
 
 const botConversations = new Map();
@@ -121,19 +130,14 @@ function getBotConversation(phone) {
     botConversations.set(phone, {
       messages: [],
       notifiedOwner: false,
-      lead: {
-        name: null,
-        business: null,
-        businessType: null,
-        requirement: null
-      }
+      lead: { name: null, business: null, businessType: null, requirement: null }
     });
   }
   return botConversations.get(phone);
 }
 
 // ============================================================
-// PERSONAL NUMBER CONVERSATIONS (whatsapp-web.js)
+// PERSONAL NUMBER CONVERSATIONS (Baileys)
 // ============================================================
 
 const personalChats = new Map();
@@ -156,24 +160,23 @@ function getPersonalChat(phone) {
 // ============================================================
 
 function detectInterest(text) {
-  const message = text.toLowerCase().trim();
+  const msg = text.toLowerCase().trim();
   const patterns = [
-    "i'm interested", "im interested", "i am interested",
-    "i want one", "i need one", "i want a bot", "i need a bot",
-    "i want you to build", "i need you to build",
-    "build one for me", "build it for me",
-    "can you build one", "can you build this",
-    "can you make one", "make one for me",
-    "i want this for my business", "i need this for my business",
-    "i want this for my restaurant", "i need this for my restaurant",
-    "i want to get started", "how can i get started",
-    "let's do it", "lets do it",
+    "i'm interested","im interested","i am interested",
+    "i want one","i need one","i want a bot","i need a bot",
+    "i want you to build","i need you to build",
+    "build one for me","build it for me",
+    "can you build one","can you build this",
+    "can you make one","make one for me",
+    "i want this for my business","i need this for my business",
+    "i want to get started","how can i get started",
+    "let's do it","lets do it",
     "i want to work with you",
-    "i need your service", "i want your service",
-    "how much will it cost", "what will it cost",
-    "how much is it", "i want to order one"
+    "i need your service","i want your service",
+    "how much will it cost","what will it cost",
+    "how much is it","i want to order one"
   ];
-  return patterns.some(p => message.includes(p));
+  return patterns.some(p => msg.includes(p));
 }
 
 // ============================================================
@@ -183,19 +186,17 @@ function detectInterest(text) {
 function updateLeadInformation(conversation, text) {
   const lower = text.toLowerCase();
   const businessTypes = [
-    "restaurant", "food", "shop", "store", "school",
-    "salon", "barber", "hotel", "pharmacy", "hospital",
-    "church", "company", "business", "clothing", "fashion",
-    "delivery", "logistics"
+    "restaurant","food","shop","store","school","salon","barber",
+    "hotel","pharmacy","hospital","church","company","business",
+    "clothing","fashion","delivery","logistics"
   ];
   for (const type of businessTypes) {
     if (lower.includes(type)) { conversation.lead.businessType = type; break; }
   }
   const requirementPatterns = [
-    "ordering bot", "order bot", "whatsapp bot", "ai bot",
-    "customer service", "booking bot", "booking system",
-    "ordering system", "payment bot", "delivery bot",
-    "restaurant bot", "chatbot"
+    "ordering bot","order bot","whatsapp bot","ai bot",
+    "customer service","booking bot","booking system",
+    "ordering system","payment bot","delivery bot","restaurant bot","chatbot"
   ];
   for (const req of requirementPatterns) {
     if (lower.includes(req)) { conversation.lead.requirement = text; break; }
@@ -207,11 +208,7 @@ function updateLeadInformation(conversation, text) {
 // ============================================================
 
 async function askGemini(messages) {
-  const history = messages
-    .slice(-12)
-    .map(m => `${m.role}: ${m.text}`)
-    .join("\n");
-
+  const history = messages.slice(-12).map(m => `${m.role}: ${m.text}`).join("\n");
   const prompt = `
 BUSINESS RULES:
 ${BUSINESS_RULES}
@@ -220,7 +217,7 @@ CONVERSATION:
 ${history}
 
 Respond to the customer based on the business rules.
-- Be natural.
+- Be natural and friendly.
 - Keep the response reasonably short.
 - Ask useful questions when more information is needed.
 - Do not ask too many questions at once.
@@ -257,129 +254,171 @@ Respond to the customer based on the business rules.
 async function notifyOwner(from, userText, conversation) {
   if (conversation.notifiedOwner) return;
   const lead = conversation.lead;
-  const msg = `🚨 NEW POTENTIAL CLIENT
-
-📱 Customer: +${from}
-🏢 Business: ${lead.business || "Not provided"}
-💼 Business Type: ${lead.businessType || "Not provided"}
-🤖 Bot Needed: ${lead.requirement || "Not fully identified"}
-💬 Message: "${userText}"
-🔥 Interest: HIGH
-
-👉 Please follow up with this customer.`;
-
+  const msg = `🚨 NEW POTENTIAL CLIENT\n\n📱 Customer: +${from}\n🏢 Business: ${lead.business || "Not provided"}\n💼 Business Type: ${lead.businessType || "Not provided"}\n🤖 Bot Needed: ${lead.requirement || "Not fully identified"}\n💬 Message: "${userText}"\n🔥 Interest: HIGH\n\n👉 Please follow up with this customer.`;
   try {
     await sendBotMessage(OWNER_NUMBER, msg);
     conversation.notifiedOwner = true;
-    console.log(`Owner notified about ${from}`);
   } catch (err) {
     console.error("Failed to notify owner:", err?.message);
   }
 }
 
 // ============================================================
-// SEND MESSAGE via Meta API (bot number)
+// SEND MESSAGE via Meta API (bot number — unchanged)
 // ============================================================
 
 async function sendBotMessage(to, body) {
   const url = `https://graph.facebook.com/v23.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
   const res = await axios.post(url,
-    {
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to,
-      type: "text",
-      text: { preview_url: false, body }
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    }
+    { messaging_product: "whatsapp", recipient_type: "individual", to, type: "text", text: { preview_url: false, body } },
+    { headers: { Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
   );
   return res.data;
 }
 
 // ============================================================
-// WHATSAPP-WEB.JS CLIENT (personal number)
+// BAILEYS SOCKET (personal number — no Chrome needed!)
 // ============================================================
 
-// Find Chrome executable — works on Render, Railway, local
-function findChrome() {
-  const paths = [
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
-    "/snap/bin/chromium"
-  ];
-  const fs = require("fs");
-  for (const p of paths) {
-    if (fs.existsSync(p)) return p;
-  }
-  return null; // let Puppeteer find it itself
+let sock = null;
+let qrString = null;
+let personalConnected = false;
+
+async function startPersonalNumber() {
+  if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+  const { version } = await fetchLatestBaileysVersion();
+
+  console.log(`\n🔧 Baileys version: ${version.join(".")}`);
+
+  sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false, // we handle QR ourselves
+    logger: require("pino")({ level: "silent" }),
+    browser: ["Stony_Tech Bot", "Chrome", "1.0.0"],
+    syncFullHistory: false,
+    markOnlineOnConnect: false
+  });
+
+  // ── Save credentials whenever they update ──────────────
+  sock.ev.on("creds.update", saveCreds);
+
+  // ── Connection updates ─────────────────────────────────
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      qrString = qr;
+      console.log("\n📱 SCAN THIS QR CODE WITH YOUR PERSONAL NUMBER (0547100951):");
+      console.log("Open WhatsApp → Linked Devices → Link a Device → Scan\n");
+      qrcode.generate(qr, { small: true });
+    }
+
+    if (connection === "open") {
+      personalConnected = true;
+      qrString = null;
+      console.log("✅ Personal number connected via Baileys!");
+    }
+
+    if (connection === "close") {
+      personalConnected = false;
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      console.log(`⚠️  Personal number disconnected. Status: ${statusCode}. Reconnect: ${shouldReconnect}`);
+      if (shouldReconnect) {
+        console.log("🔄 Reconnecting in 5 seconds...");
+        setTimeout(startPersonalNumber, 5000);
+      } else {
+        console.log("❌ Logged out. Delete baileys_auth folder and restart to re-scan QR.");
+      }
+    }
+  });
+
+  // ── Incoming messages on personal number ───────────────
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+
+    for (const msg of messages) {
+      try {
+        // Only private chats
+        if (!msg.key.remoteJid?.endsWith("@s.whatsapp.net")) continue;
+
+        const fromMe = msg.key.fromMe;
+        const jid    = msg.key.remoteJid;
+        const from   = jid.replace("@s.whatsapp.net", "");
+        const text   = msg.message?.conversation ||
+                       msg.message?.extendedTextMessage?.text ||
+                       "";
+
+        if (!text.trim()) continue;
+
+        // ── Noah replied manually ─────────────────────────
+        if (fromMe) {
+          const chat = getPersonalChat(from);
+          console.log(`✍️  Noah replied to ${from}`);
+          chat.ownerReplied = true;
+          chat.botActive    = false;
+          if (chat.fallbackTimer) {
+            clearTimeout(chat.fallbackTimer);
+            chat.fallbackTimer = null;
+          }
+          chat.messages.push({ role: "assistant", text: text.trim() });
+          continue;
+        }
+
+        // ── Customer message ──────────────────────────────
+        console.log(`📨 [PERSONAL] From ${from}: ${text}`);
+        const chat = getPersonalChat(from);
+        chat.messages.push({ role: "customer", text: text.trim() });
+        chat.lastCustomerMessage = text.trim();
+
+        // Bot already active → Gemini replies immediately
+        if (chat.botActive) {
+          let reply;
+          try {
+            reply = await askGemini(chat.messages);
+          } catch {
+            reply = "Sorry, I'm having a little trouble right now. Please try again shortly. 🙏";
+          }
+          chat.messages.push({ role: "assistant", text: reply });
+          if (chat.messages.length > 20) chat.messages = chat.messages.slice(-20);
+          console.log(`🤖 [PERSONAL BOT] Reply to ${from}: ${reply}`);
+          await sock.sendMessage(jid, { text: reply });
+          continue;
+        }
+
+        // Bot not active → start/reset 20 min timer
+        chat.ownerReplied = false;
+        startFallbackTimer(from, jid, chat);
+        console.log(`⏳ 20 min timer started for ${from}`);
+
+      } catch (err) {
+        console.error("Personal message handler error:", err?.message);
+      }
+    }
+  });
 }
 
-const wwjsClient = new Client({
-  authStrategy: new LocalAuth({ clientId: "stonytech-personal" }),
-  puppeteer: {
-    headless: true,
-    executablePath: findChrome() || undefined,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--no-first-run",
-      "--no-zygote",
-      "--single-process",
-      "--disable-gpu"
-    ]
-  }
-});
-
-// Show QR code in terminal to scan with personal number
-wwjsClient.on("qr", (qr) => {
-  console.log("\n📱 SCAN THIS QR CODE WITH YOUR PERSONAL NUMBER (0547100951):\n");
-  qrcode.generate(qr, { small: true });
-  console.log("\nOpen WhatsApp → Linked Devices → Link a Device → Scan\n");
-});
-
-wwjsClient.on("ready", () => {
-  console.log("✅ Personal number (whatsapp-web.js) is connected and ready!");
-});
-
-wwjsClient.on("auth_failure", (msg) => {
-  console.error("❌ Personal number auth failed:", msg);
-});
-
-wwjsClient.on("disconnected", (reason) => {
-  console.warn("⚠️  Personal number disconnected:", reason);
-});
-
 // ============================================================
-// PERSONAL NUMBER — 20 MIN FALLBACK TIMER
+// 20 MIN FALLBACK TIMER
 // ============================================================
 
-function startFallbackTimer(from, chat) {
+function startFallbackTimer(from, jid, chat) {
   if (chat.fallbackTimer) clearTimeout(chat.fallbackTimer);
 
   chat.fallbackTimer = setTimeout(async () => {
-    if (!chat.ownerReplied) {
+    if (!chat.ownerReplied && sock) {
       console.log(`⏰ 20 min passed — bot taking over personal chat with ${from}`);
       chat.botActive = true;
 
-      const unavailableMsg =
-        "Hi! 👋 Noah is not currently available, but I'm the Stony_Tech AI assistant and I'm here to help you.\n\nHow can I assist you today?";
+      const unavailableMsg = "Hi! 👋 Noah is not currently available, but I'm the Stony_Tech AI assistant and I'm here to help you.\n\nHow can I assist you today?";
 
       try {
-        // Send via personal number
-        const contactId = `${from}@c.us`;
-        await wwjsClient.sendMessage(contactId, unavailableMsg);
+        await sock.sendMessage(jid, { text: unavailableMsg });
         chat.messages.push({ role: "assistant", text: unavailableMsg });
 
-        // Let Gemini continue the conversation
         if (chat.lastCustomerMessage) {
           let geminiReply;
           try {
@@ -388,81 +427,14 @@ function startFallbackTimer(from, chat) {
             geminiReply = "I'm here to help! Could you tell me about your business and what you need? 😊";
           }
           chat.messages.push({ role: "assistant", text: geminiReply });
-          await wwjsClient.sendMessage(contactId, geminiReply);
+          await sock.sendMessage(jid, { text: geminiReply });
         }
       } catch (err) {
-        console.error("Fallback send error:", err?.message);
+        console.error("Fallback timer send error:", err?.message);
       }
     }
   }, FALLBACK_DELAY_MS);
 }
-
-// ============================================================
-// PERSONAL NUMBER — INCOMING MESSAGES
-// ============================================================
-
-wwjsClient.on("message", async (msg) => {
-  try {
-    // Only handle private chats, ignore groups
-    if (msg.isGroupMsg) return;
-    if (msg.type !== "chat") return;
-
-    const from    = msg.from.replace("@c.us", "");
-    const text    = msg.body?.trim();
-    const fromMe  = msg.fromMe;
-
-    if (!text) return;
-
-    // ── Owner (Noah) replied manually ──────────────────────
-    if (fromMe) {
-      const chat = getPersonalChat(from);
-      console.log(`✍️  Noah replied to ${from}`);
-
-      chat.ownerReplied = true;
-      chat.botActive    = false;
-
-      if (chat.fallbackTimer) {
-        clearTimeout(chat.fallbackTimer);
-        chat.fallbackTimer = null;
-      }
-
-      chat.messages.push({ role: "assistant", text });
-      return;
-    }
-
-    // ── Customer message ────────────────────────────────────
-    console.log(`📨 [PERSONAL] From ${from}: ${text}`);
-
-    const chat = getPersonalChat(from);
-    chat.messages.push({ role: "customer", text });
-    chat.lastCustomerMessage = text;
-
-    // If bot already active → Gemini replies immediately
-    if (chat.botActive) {
-      let reply;
-      try {
-        reply = await askGemini(chat.messages);
-      } catch {
-        reply = "Sorry, I'm having a little trouble right now. Please try again shortly. 🙏";
-      }
-
-      chat.messages.push({ role: "assistant", text: reply });
-      if (chat.messages.length > 20) chat.messages = chat.messages.slice(-20);
-
-      console.log(`🤖 [PERSONAL BOT] Reply to ${from}: ${reply}`);
-      await msg.reply(reply);
-      return;
-    }
-
-    // Bot not active yet → start 20 min timer
-    chat.ownerReplied = false;
-    startFallbackTimer(from, chat);
-    console.log(`⏳ 20 min timer started for ${from}`);
-
-  } catch (err) {
-    console.error("Personal message handler error:", err?.message);
-  }
-});
 
 // ============================================================
 // META WEBHOOK VERIFICATION (bot number)
@@ -516,9 +488,7 @@ app.post("/webhook", async (req, res) => {
     if (!reply) reply = "Sorry, I couldn't generate a response right now. Please try again.";
 
     conversation.messages.push({ role: "assistant", text: reply });
-    if (conversation.messages.length > 20) {
-      conversation.messages = conversation.messages.slice(-20);
-    }
+    if (conversation.messages.length > 20) conversation.messages = conversation.messages.slice(-20);
 
     console.log(`🤖 [BOT NUMBER] Reply to ${from}: ${reply}`);
     await sendBotMessage(from, reply);
@@ -529,18 +499,48 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ============================================================
+// QR CODE PAGE (open in browser to scan)
+// ============================================================
+
+app.get("/qr", (req, res) => {
+  if (personalConnected) {
+    return res.send("<h2>✅ Personal number is connected!</h2>");
+  }
+  if (qrString) {
+    return res.send(`
+      <html>
+        <head><title>Scan QR</title></head>
+        <body style="text-align:center;font-family:sans-serif;padding:40px">
+          <h2>📱 Scan with your personal WhatsApp (0547100951)</h2>
+          <p>Open WhatsApp → Linked Devices → Link a Device → Scan</p>
+          <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qrString)}" />
+          <p><small>Refresh this page if QR expired</small></p>
+        </body>
+      </html>
+    `);
+  }
+  return res.send("<h2>⏳ QR not ready yet. Refresh in 5 seconds...</h2><script>setTimeout(()=>location.reload(),5000)</script>");
+});
+
+// ============================================================
 // ROOT & HEALTH
 // ============================================================
 
 app.get("/", (req, res) => {
-  res.status(200).send("Stony_Tech AI Bot is running. 🚀");
+  res.status(200).send(`
+    <html><body style="font-family:sans-serif;padding:40px">
+    <h2>🚀 Stony_Tech AI Bot is running</h2>
+    <p>Bot number: ✅ Active</p>
+    <p>Personal number: ${personalConnected ? "✅ Connected" : "❌ Not connected — <a href='/qr'>Click here to scan QR</a>"}</p>
+    </body></html>
+  `);
 });
 
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     bot: "Stony_Tech AI Bot",
-    personalConnected: wwjsClient.info ? true : false,
+    personalConnected,
     botChats: botConversations.size,
     personalChats: personalChats.size
   });
@@ -552,7 +552,7 @@ app.get("/health", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Stony_Tech AI Bot running on port ${PORT}`);
+  console.log(`👉 Open https://your-render-url.onrender.com/qr to scan QR code`);
 });
 
-// Initialize personal number client
-wwjsClient.initialize();
+startPersonalNumber();
