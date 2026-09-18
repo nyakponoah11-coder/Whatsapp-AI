@@ -610,7 +610,10 @@ app.listen(PORT, () => {
   console.log(`👉 Open your /qr route to scan codes for both numbers`);
 
   // Start Main Personal Number
-  startBaileysClient("main", baileysSessions.main.phone, AUTH_FOLDER_MAIN, []);
+  startBaileysClient("main", baileysSessions.main.phone, AUTH_FOLDER_MAIN, [
+    "233599779237",
+    "+233550901484"
+  ]);
 
   // Start Second Number (Silently ignores the 2 numbers you specified)
   startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC, [
