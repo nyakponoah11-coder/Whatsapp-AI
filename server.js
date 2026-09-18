@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { GoogleGenAI } = require("@google/genai");
+const { Groq } = require("groq-sdk"); // ⚡ Added Groq SDK
 const makeWASocket = require("@whiskeysockets/baileys").default;
 const {
   useMultiFileAuthState,
@@ -21,17 +22,20 @@ const PORT = process.env.PORT || 10000;
 
 const {
   GEMINI_API_KEY,
+  GROQ_API_KEY, // ⚡ Added Groq API Key
   WHATSAPP_ACCESS_TOKEN,
   WHATSAPP_PHONE_NUMBER_ID,
   WHATSAPP_VERIFY_TOKEN,
 } = process.env;
 
-if (!GEMINI_API_KEY)          console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GEMINI_API_KEY)         console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GROQ_API_KEY)           console.warn("⚠️  Missing GROQ_API_KEY (Groq fallback will fail if triggered)");
 if (!WHATSAPP_ACCESS_TOKEN)    console.warn("⚠️  Missing WHATSAPP_ACCESS_TOKEN");
 if (!WHATSAPP_PHONE_NUMBER_ID) console.warn("⚠️  Missing WHATSAPP_PHONE_NUMBER_ID");
 if (!WHATSAPP_VERIFY_TOKEN)    console.warn("⚠️  Missing WHATSAPP_VERIFY_TOKEN");
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+const groq = new Groq({ apiKey: GROQ_API_KEY }); // ⚡ Initialize Groq client
 
 // ============================================================
 // CONFIG
@@ -206,10 +210,10 @@ function updateLeadInformation(conversation, text) {
 }
 
 // ============================================================
-// GEMINI
+// AI ENGINE (Gemini with Groq Cloud Fallback)
 // ============================================================
 
-async function askGemini(messages) {
+async function askAI(messages) {
   const history = messages.slice(-12).map(m => `${m.role}: ${m.text}`).join("\n");
   const prompt = `
 BUSINESS RULES:
@@ -227,8 +231,8 @@ Respond to the customer based on the business rules.
 `.trim();
 
   const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  let lastError;
 
+  // 1️⃣ Try Gemini First
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const result = await ai.models.generateContent({ model, contents: prompt });
@@ -236,17 +240,39 @@ Respond to the customer based on the business rules.
       if (reply) return reply;
       throw new Error("Gemini returned empty response.");
     } catch (error) {
-      lastError = error;
       const status = error?.status || error?.response?.status;
       console.error(`Gemini attempt ${attempt} failed:`, error?.message);
       if (status === 503 || status === 429) {
-        await new Promise(r => setTimeout(r, attempt * 2000));
-        continue;
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, attempt * 2000));
+          continue;
+        }
+      } else {
+        // If it's another critical error or max attempts reached, break to fallback
+        break;
       }
-      break;
     }
   }
-  throw lastError || new Error("Gemini failed.");
+
+  // 2️⃣ Fallback to Groq Llama 3 if Gemini fails or hits rate limits
+  console.warn("⚠️ Switching to Groq Cloud (Llama 3) fallback...");
+  try {
+    const chatCompletion = await groq.chat.completions.create({
+      messages: [
+        { role: "system", content: BUSINESS_RULES },
+        { role: "user", content: prompt }
+      ],
+      model: "llama3-70b-8192",
+      temperature: 0.7,
+    });
+
+    const groqReply = chatCompletion.choices[0]?.message?.content?.trim();
+    if (groqReply) return groqReply;
+    throw new Error("Groq returned empty response.");
+  } catch (groqError) {
+    console.error("❌ Groq fallback also failed:", groqError?.message);
+    throw new Error("Both AI engines failed.");
+  }
 }
 
 // ============================================================
@@ -378,11 +404,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         chat.messages.push({ role: "customer", text: text.trim() });
         chat.lastCustomerMessage = text.trim();
 
-        // Bot already active → Gemini replies immediately
+        // Bot already active → AI replies immediately (Gemini with Groq backup)
         if (chat.botActive) {
           let reply;
           try {
-            reply = await askGemini(chat.messages);
+            reply = await askAI(chat.messages);
           } catch {
             reply = "Sorry, I'm having a little trouble right now. Please try again shortly. 🙏";
           }
@@ -422,14 +448,14 @@ function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
         chat.messages.push({ role: "assistant", text: unavailableMsg });
 
         if (chat.lastCustomerMessage) {
-          let geminiReply;
+          let aiReply;
           try {
-            geminiReply = await askGemini(chat.messages);
+            aiReply = await askAI(chat.messages);
           } catch {
-            geminiReply = "I'm here to help! Could you tell me about your business and what you need? 😊";
+            aiReply = "I'm here to help! Could you tell me about your business and what you need? 😊";
           }
-          chat.messages.push({ role: "assistant", text: geminiReply });
-          await activeSock.sendMessage(jid, { text: geminiReply });
+          chat.messages.push({ role: "assistant", text: aiReply });
+          await activeSock.sendMessage(jid, { text: aiReply });
         }
       } catch (err) {
         console.error("Fallback timer send error:", err?.message);
@@ -479,9 +505,9 @@ app.post("/webhook", async (req, res) => {
 
     let reply;
     try {
-      reply = await askGemini(conversation.messages);
+      reply = await askAI(conversation.messages); // Uses Gemini with Groq fallback
     } catch (err) {
-      console.error("Gemini error:", err?.message);
+      console.error("AI Engine error:", err?.message);
       reply = "Sorry, I'm having a little trouble responding right now. Please try again in a moment. 🙏";
     }
 
@@ -549,7 +575,7 @@ app.get("/qr", (req, res) => {
 });
 
 // ============================================================
-// ROOT & HEALTH
+// ROOT & HEALTH (Includes /health route to keep Render alive)
 // ============================================================
 
 app.get("/", (req, res) => {
@@ -565,7 +591,7 @@ app.get("/", (req, res) => {
 });
 
 app.get("/health", (req, res) => {
-  res.json({
+  res.status(200).json({
     status: "ok",
     bot: "Stony_Tech AI Bot",
     mainConnected: baileysSessions.main.connected,
