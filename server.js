@@ -46,7 +46,7 @@ const WHATSAPP_VERIFY_TOKEN =
 // ============================================================
 
 const GEMINI_MODEL =
-  process.env.GEMINI_MODEL || gemini-3.6-flash";
+  process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 const GROQ_MODEL =
   process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
