@@ -295,7 +295,7 @@ async function askAI(messages) {
     }
   }
 
-  return "Sorry, I'm having a little trouble responding right now. Please try again shortly.";
+  return "Sorry, I's having a little trouble responding right now. Please try again shortly.";
 }
 
 // =====================================================
@@ -341,12 +341,13 @@ function cancelFallbackTimer(chat) {
 }
 
 // =====================================================
-// START FALLBACK TIMER
+// START FALLBACK TIMER (With Block Check Guard)
 // =====================================================
 
 function startFallbackTimer(sessionKey, phone, jid) {
   const normalizedPhone = normalizePhone(phone);
 
+  // Instant exit if already blocked before starting the timer
   if (isBlockedForSession(sessionKey, normalizedPhone)) {
     console.log(`🚫 BLOCKED: +${normalizedPhone} — timer aborted.`);
     return;
@@ -368,6 +369,7 @@ function startFallbackTimer(sessionKey, phone, jid) {
   chat.fallbackTimer = setTimeout(async () => {
     chat.fallbackTimer = null;
 
+    // 🛑 STRICT GUARD: Check block list again right before sending the takeover message!
     if (isBlockedForSession(sessionKey, normalizedPhone) || chat.ownerReplied) {
       console.log(`🚫 Blocked or owner replied — AI takeover cancelled for +${normalizedPhone}`);
       return;
@@ -387,6 +389,7 @@ function startFallbackTimer(sessionKey, phone, jid) {
       saveMessage(chat, "assistant", takeoverMessage);
       console.log(`🤖 AI takeover for +${normalizedPhone}`);
 
+      // Final check before triggering the actual AI response
       if (chat.ownerReplied || isBlockedForSession(sessionKey, normalizedPhone)) {
         chat.botActive = false;
         return;
@@ -394,6 +397,7 @@ function startFallbackTimer(sessionKey, phone, jid) {
 
       const aiReply = await askAI(chat.messages);
 
+      // Final check before sending the AI response
       if (chat.ownerReplied || isBlockedForSession(sessionKey, normalizedPhone)) {
         chat.botActive = false;
         return;
