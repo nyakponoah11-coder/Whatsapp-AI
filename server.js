@@ -82,7 +82,7 @@ const WHATSAPP_VERIFY_TOKEN    = process.env.WHATSAPP_VERIFY_TOKEN;
 // =====================================================
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_MODEL = "llama-3.3-70b-versatile";        
+const GROQ_MODEL = "openai/gpt-oss-20b";        
 
 const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 
