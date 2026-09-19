@@ -3,7 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { GoogleGenAI } = require("@google/genai");
-const { Groq } = require("groq-sdk"); // ⚡ Added Groq SDK
+const { Groq } = require("groq-sdk");
 const makeWASocket = require("@whiskeysockets/baileys").default;
 const {
   useMultiFileAuthState,
@@ -22,20 +22,20 @@ const PORT = process.env.PORT || 10000;
 
 const {
   GEMINI_API_KEY,
-  GROQ_API_KEY, // ⚡ Added Groq API Key
+  GROQ_API_KEY,
   WHATSAPP_ACCESS_TOKEN,
   WHATSAPP_PHONE_NUMBER_ID,
   WHATSAPP_VERIFY_TOKEN,
 } = process.env;
 
-if (!GEMINI_API_KEY)         console.warn("⚠️  Missing GEMINI_API_KEY");
-if (!GROQ_API_KEY)           console.warn("⚠️  Missing GROQ_API_KEY (Groq fallback will fail if triggered)");
+if (!GEMINI_API_KEY)           console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GROQ_API_KEY)             console.warn("⚠️  Missing GROQ_API_KEY");
 if (!WHATSAPP_ACCESS_TOKEN)    console.warn("⚠️  Missing WHATSAPP_ACCESS_TOKEN");
 if (!WHATSAPP_PHONE_NUMBER_ID) console.warn("⚠️  Missing WHATSAPP_PHONE_NUMBER_ID");
 if (!WHATSAPP_VERIFY_TOKEN)    console.warn("⚠️  Missing WHATSAPP_VERIFY_TOKEN");
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-const groq = new Groq({ apiKey: GROQ_API_KEY }); // ⚡ Initialize Groq client
+const ai   = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+const groq = new Groq({ apiKey: GROQ_API_KEY });
 
 // ============================================================
 // CONFIG
@@ -45,6 +45,15 @@ const OWNER_NUMBER      = "233547100951";
 const FALLBACK_DELAY_MS = 7 * 60 * 1000; // 7 minutes
 const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
+
+// ============================================================
+// BLOCKED NUMBERS
+// ============================================================
+
+const BLOCKED_NUMBERS = {
+  main:   ["233599779237", "233550901484", "233547100951"],
+  second: ["233535840183", "233267103209"]
+};
 
 // ============================================================
 // BUSINESS RULES
@@ -248,13 +257,12 @@ Respond to the customer based on the business rules.
           continue;
         }
       } else {
-        // If it's another critical error or max attempts reached, break to fallback
         break;
       }
     }
   }
 
-  // 2️⃣ Fallback to Groq Llama 3 if Gemini fails or hits rate limits
+  // 2️⃣ Fallback to Groq Llama 3
   console.warn("⚠️ Switching to Groq Cloud (Llama 3) fallback...");
   try {
     const chatCompletion = await groq.chat.completions.create({
@@ -265,7 +273,6 @@ Respond to the customer based on the business rules.
       model: "llama3-70b-8192",
       temperature: 0.7,
     });
-
     const groqReply = chatCompletion.choices[0]?.message?.content?.trim();
     if (groqReply) return groqReply;
     throw new Error("Groq returned empty response.");
@@ -305,7 +312,7 @@ async function sendBotMessage(to, body) {
 }
 
 // ============================================================
-// MULTI-BAILEY'S SETUP (Handles both personal numbers concurrently)
+// MULTI-BAILEYS SETUP
 // ============================================================
 
 const baileysSessions = {
@@ -330,7 +337,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
   });
 
   baileysSessions[sessionKey].sock = sock;
-
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", (update) => {
@@ -357,12 +363,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         console.log(`🔄 Reconnecting ${phoneNumber} in 5 seconds...`);
         setTimeout(() => startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNumbers), 5000);
       } else {
-        console.log(`❌ Logged out ${phoneNumber}. Delete ${authFolder} folder and restart to re-scan QR.`);
+        console.log(`❌ Logged out ${phoneNumber}. Delete ${authFolder} and restart.`);
       }
     }
   });
 
-  // ── Incoming messages for this specific client ──────────────────────────────
   sock.ev.on("messages.upsert", async ({ messages }) => {
     for (const msg of messages) {
       try {
@@ -372,25 +377,22 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@lid")) continue;
 
         const fromMe = msg.key.fromMe;
-        const from = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
-        
-        // 🚫 Check if this number is in the Ignore List (will silently skip)
-        if (ignoredNumbers.includes(from)) {
-          continue; 
-        }
+        const from   = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
+
+        // 🚫 Ignore blocked numbers
+        if (ignoredNumbers.includes(from)) continue;
 
         const text = msg.message?.conversation ||
                      msg.message?.extendedTextMessage?.text ||
-                     msg.message?.imageMessage?.caption ||
-                     "";
+                     msg.message?.imageMessage?.caption || "";
 
         if (!text.trim()) continue;
 
-        // ── You replied manually ─────────────────────────
+        // ── You replied manually ──────────────────────────
         if (fromMe) {
           const chat = getPersonalChat(from);
           chat.ownerReplied = true;
-          chat.botActive = false;
+          chat.botActive    = false;
           if (chat.fallbackTimer) {
             clearTimeout(chat.fallbackTimer);
             chat.fallbackTimer = null;
@@ -399,12 +401,12 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
           continue;
         }
 
-        // ── Customer message received ───────────────────────
+        // ── Customer message ──────────────────────────────
         const chat = getPersonalChat(from);
         chat.messages.push({ role: "customer", text: text.trim() });
         chat.lastCustomerMessage = text.trim();
 
-        // Bot already active → AI replies immediately (Gemini with Groq backup)
+        // Bot already active → reply immediately
         if (chat.botActive) {
           let reply;
           try {
@@ -418,7 +420,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
           continue;
         }
 
-        // Bot not active yet → start or reset the 7 min fallback timer
+        // Start 7 min fallback timer
         chat.ownerReplied = false;
         startFallbackTimer(from, jid, chat, sock, phoneNumber);
 
@@ -465,7 +467,7 @@ function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
 }
 
 // ============================================================
-// META WEBHOOK VERIFICATION (bot number)
+// META WEBHOOK VERIFICATION
 // ============================================================
 
 app.get("/webhook", (req, res) => {
@@ -505,7 +507,7 @@ app.post("/webhook", async (req, res) => {
 
     let reply;
     try {
-      reply = await askAI(conversation.messages); // Uses Gemini with Groq fallback
+      reply = await askAI(conversation.messages);
     } catch (err) {
       console.error("AI Engine error:", err?.message);
       reply = "Sorry, I'm having a little trouble responding right now. Please try again in a moment. 🙏";
@@ -524,7 +526,102 @@ app.post("/webhook", async (req, res) => {
 });
 
 // ============================================================
-// DUAL QR CODE PAGE (Auto-refreshes every 10 minutes)
+// BLOCKED NUMBERS PAGE
+// ============================================================
+
+app.get("/blocked", (req, res) => {
+  const style = `
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: sans-serif; background: #f4f4f9; padding: 30px; }
+      h1 { color: #111; margin-bottom: 6px; }
+      .subtitle { color: #666; font-size: 14px; margin-bottom: 24px; }
+      .cards { display: flex; gap: 20px; flex-wrap: wrap; }
+      .card { background: white; border-radius: 12px; padding: 20px;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.08); min-width: 280px; flex: 1; }
+      .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+      .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; }
+      .dot.off { background: #ef4444; }
+      .card-title { font-size: 15px; font-weight: 600; color: #222; }
+      .card-phone { font-size: 12px; color: #888; margin-top: 2px; }
+      ul { list-style: none; }
+      li { display: flex; align-items: center; gap: 10px;
+           padding: 10px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; color: #333; }
+      li:last-child { border-bottom: none; }
+      .badge { background: #fee2e2; color: #b91c1c; font-size: 10px; font-weight: 700;
+               padding: 2px 8px; border-radius: 20px; letter-spacing: 0.5px; }
+      .empty { color: #aaa; font-style: italic; font-size: 13px; padding: 10px 0; }
+      .total { font-size: 12px; color: #888; margin-top: 12px; }
+      .back { display: inline-block; margin-top: 24px; color: #2563eb;
+              text-decoration: none; font-size: 13px; }
+      .back:hover { text-decoration: underline; }
+    </style>
+  `;
+
+  const mainConnected   = baileysSessions.main.connected;
+  const secondConnected = baileysSessions.second.connected;
+
+  let mainList = "";
+  if (BLOCKED_NUMBERS.main.length === 0) {
+    mainList = `<li><span class="empty">No blocked numbers</span></li>`;
+  } else {
+    BLOCKED_NUMBERS.main.forEach(n => {
+      mainList += `<li><span class="badge">BLOCKED</span> +${n}</li>`;
+    });
+  }
+
+  let secondList = "";
+  if (BLOCKED_NUMBERS.second.length === 0) {
+    secondList = `<li><span class="empty">No blocked numbers</span></li>`;
+  } else {
+    BLOCKED_NUMBERS.second.forEach(n => {
+      secondList += `<li><span class="badge">BLOCKED</span> +${n}</li>`;
+    });
+  }
+
+  res.send(`
+    <html>
+      <head><title>Blocked Numbers</title>${style}</head>
+      <body>
+        <h1>🚫 Blocked Numbers</h1>
+        <p class="subtitle">These numbers are ignored — the bot will never reply to them.</p>
+
+        <div class="cards">
+
+          <div class="card">
+            <div class="card-header">
+              <div class="dot ${mainConnected ? "" : "off"}"></div>
+              <div>
+                <div class="card-title">Main Number</div>
+                <div class="card-phone">+${baileysSessions.main.phone} · ${mainConnected ? "Connected" : "Not connected"}</div>
+              </div>
+            </div>
+            <ul>${mainList}</ul>
+            <div class="total">${BLOCKED_NUMBERS.main.length} number${BLOCKED_NUMBERS.main.length !== 1 ? "s" : ""} blocked</div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div class="dot ${secondConnected ? "" : "off"}"></div>
+              <div>
+                <div class="card-title">Second Number</div>
+                <div class="card-phone">+${baileysSessions.second.phone} · ${secondConnected ? "Connected" : "Not connected"}</div>
+              </div>
+            </div>
+            <ul>${secondList}</ul>
+            <div class="total">${BLOCKED_NUMBERS.second.length} number${BLOCKED_NUMBERS.second.length !== 1 ? "s" : ""} blocked</div>
+          </div>
+
+        </div>
+
+        <a class="back" href="/">← Back to dashboard</a>
+      </body>
+    </html>
+  `);
+});
+
+// ============================================================
+// QR CODE PAGE
 // ============================================================
 
 app.get("/qr", (req, res) => {
@@ -533,9 +630,11 @@ app.get("/qr", (req, res) => {
       <head>
         <title>Scan WhatsApp QRs</title>
         <style>
-          body { font-family: sans-serif; text-align: center; padding: 20px; background: #f4f4f9;}
-          .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: inline-block; margin: 10px; width: 320px; vertical-align: top;}
-          img { border-radius: 10px; border: 1px solid #ddd; padding: 10px; background: white;}
+          body { font-family: sans-serif; text-align: center; padding: 20px; background: #f4f4f9; }
+          .card { background: white; padding: 20px; border-radius: 10px;
+                  box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: inline-block;
+                  margin: 10px; width: 320px; vertical-align: top; }
+          img { border-radius: 10px; border: 1px solid #ddd; padding: 10px; background: white; }
           h2 { color: #333; margin-bottom: 5px; }
           p.status { color: #555; font-weight: bold; }
         </style>
@@ -548,7 +647,7 @@ app.get("/qr", (req, res) => {
   // Main Number Card
   html += `<div class="card"><h2>Main Number</h2><p>+${baileysSessions.main.phone}</p>`;
   if (baileysSessions.main.connected) {
-    html += `<p class="status" style="color: green;">✅ Connected!</p>`;
+    html += `<p class="status" style="color:green;">✅ Connected!</p>`;
   } else if (baileysSessions.main.qr) {
     html += `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(baileysSessions.main.qr)}" />`;
   } else {
@@ -559,7 +658,7 @@ app.get("/qr", (req, res) => {
   // Second Number Card
   html += `<div class="card"><h2>Second Number</h2><p>+${baileysSessions.second.phone}</p>`;
   if (baileysSessions.second.connected) {
-    html += `<p class="status" style="color: green;">✅ Connected!</p>`;
+    html += `<p class="status" style="color:green;">✅ Connected!</p>`;
   } else if (baileysSessions.second.qr) {
     html += `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(baileysSessions.second.qr)}" />`;
   } else {
@@ -567,28 +666,43 @@ app.get("/qr", (req, res) => {
   }
   html += `</div>`;
 
-  html += `<p><small>This page auto-refreshes every 10 minutes.</small></p>
-      <script>setTimeout(() => { location.reload(); }, 600000);</script>
-      </body></html>`;
-  
+  html += `
+        <p><small>This page auto-refreshes every 10 seconds.</small></p>
+        <script>setTimeout(() => { location.reload(); }, 10000);</script>
+      </body>
+    </html>`;
+
   res.send(html);
 });
 
 // ============================================================
-// ROOT & HEALTH (Includes /health route to keep Render alive)
+// ROOT
 // ============================================================
 
 app.get("/", (req, res) => {
   res.status(200).send(`
-    <html><body style="font-family:sans-serif;padding:40px">
-    <h2>🚀 Stony_Tech AI Bot is running</h2>
-    <p>Meta Bot: ✅ Active</p>
-    <p>Main Number (+${baileysSessions.main.phone}): ${baileysSessions.main.connected ? "✅ Connected" : "❌ Not connected"}</p>
-    <p>Second Number (+${baileysSessions.second.phone}): ${baileysSessions.second.connected ? "✅ Connected" : "❌ Not connected"}</p>
-    <p><a href='/qr'>Click here to view/scan QR codes</a></p>
-    </body></html>
+    <html>
+      <body style="font-family:sans-serif;padding:40px;background:#f4f4f9;">
+        <h2>🚀 Stony_Tech AI Bot</h2>
+        <p>Meta Bot: ✅ Active</p>
+        <p>Main Number (+${baileysSessions.main.phone}):
+          ${baileysSessions.main.connected ? "✅ Connected" : "❌ Not connected"}
+        </p>
+        <p>Second Number (+${baileysSessions.second.phone}):
+          ${baileysSessions.second.connected ? "✅ Connected" : "❌ Not connected"}
+        </p>
+        <br>
+        <p><a href="/qr">📱 Scan QR Codes</a></p>
+        <p><a href="/blocked">🚫 View Blocked Numbers</a></p>
+        <p><a href="/health">❤️ Health Check</a></p>
+      </body>
+    </html>
   `);
 });
+
+// ============================================================
+// HEALTH
+// ============================================================
 
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -596,8 +710,11 @@ app.get("/health", (req, res) => {
     bot: "Stony_Tech AI Bot",
     mainConnected: baileysSessions.main.connected,
     secondConnected: baileysSessions.second.connected,
+    blockedMain: BLOCKED_NUMBERS.main.length,
+    blockedSecond: BLOCKED_NUMBERS.second.length,
     botChats: botConversations.size,
-    personalChats: personalChats.size
+    personalChats: personalChats.size,
+    uptime: process.uptime()
   });
 });
 
@@ -607,17 +724,16 @@ app.get("/health", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Stony_Tech AI Bot running on port ${PORT}`);
-  console.log(`👉 Open your /qr route to scan codes for both numbers`);
+  console.log(`👉 Open /qr to scan QR codes`);
+  console.log(`🚫 Open /blocked to view blocked numbers`);
 
-  // Start Main Personal Number
-  startBaileysClient("main", baileysSessions.main.phone, AUTH_FOLDER_MAIN, [
-    "233599779237",
-    "+233550901484"
-  ]);
+  // Start Main Number
+  startBaileysClient("main", baileysSessions.main.phone, AUTH_FOLDER_MAIN,
+    BLOCKED_NUMBERS.main
+  );
 
-  // Start Second Number (Silently ignores the 2 numbers you specified)
-  startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC, [
-    "233535840183", 
-    "233267103209"
-  ]);
+  // Start Second Number
+  startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC,
+    BLOCKED_NUMBERS.second
+  );
 });
