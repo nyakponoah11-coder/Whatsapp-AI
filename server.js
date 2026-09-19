@@ -85,8 +85,8 @@ const WHATSAPP_VERIFY_TOKEN    = process.env.WHATSAPP_VERIFY_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GROQ_API_KEY   = process.env.GROQ_API_KEY;
 
-const GEMINI_MODEL =  "gemini-3.6-flash";      // ✅ fixed
-const GROQ_MODEL   = "llama-3.3-70b-versatile";       // ✅ fixed
+const GEMINI_MODEL =  "gemini-3-flash";      // ✅ fixed
+const GROQ_MODEL   = "llama-3.1-8b-instant";       // ✅ fixed
 
 const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 const groq   = GROQ_API_KEY  ? new Groq({ apiKey: GROQ_API_KEY })          : null;
