@@ -47,7 +47,7 @@ const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
 
 // ============================================================
-// BLOCKED NUMBERS (For Personal/Baileys Bot only)
+// BLOCKED NUMBERS
 // ============================================================
 
 const BLOCKED_NUMBERS = {
@@ -55,11 +55,14 @@ const BLOCKED_NUMBERS = {
   second: ["233535840183", "233267103209", "233547100951"]
 };
 
+// Combine all blocked numbers globally
+const ALL_BLOCKED_NUMBERS = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
+
 // ============================================================
 // STRICT HELPER: CHECK IF NUMBER IS BLOCKED
 // ============================================================
 
-function isBlocked(from, ignoredList = []) {
+function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
   if (!from) return false;
   const cleanFrom = String(from).replace(/\D/g, "");
   return ignoredList.some(num => {
@@ -392,9 +395,8 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
         const fromMe = msg.key.fromMe;
         const from   = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
 
-        // 🚫 COMBINED BLOCK CHECK: Blocks on both Main & Second Baileys sessions globally
-        const allBlocked = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
-        if (isBlocked(from, allBlocked)) {
+        // 🚫 STRICT GLOBAL BLOCK CHECK
+        if (isBlocked(from)) {
           console.log(`🚫 Blocked message ignored on Baileys from: +${from}`);
           continue;
         }
@@ -457,8 +459,7 @@ function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
 
   chat.fallbackTimer = setTimeout(async () => {
     // Secondary safety check: ensure number wasn't blocked while waiting
-    const allBlocked = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
-    if (isBlocked(from, allBlocked)) return;
+    if (isBlocked(from)) return;
 
     if (!chat.ownerReplied && activeSock) {
       console.log(`⏰ Time passed — bot taking over chat with ${from} via ${phoneNumber}`);
@@ -503,7 +504,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================================================
-// BOT NUMBER WEBHOOK (Meta - Allowed to reply to everyone)
+// BOT NUMBER WEBHOOK (Meta)
 // ============================================================
 
 app.post("/webhook", async (req, res) => {
@@ -517,7 +518,11 @@ app.post("/webhook", async (req, res) => {
     const userText = message.text?.body?.trim();
     if (!from || !userText) return;
 
-    // Meta bot is allowed to reply (no block checks here)
+    // 🚫 STRICT GLOBAL BLOCK CHECK (Stops Meta bot from replying too)
+    if (isBlocked(from)) {
+      console.log(`🚫 Blocked message ignored on Meta bot from: +${from}`);
+      return;
+    }
 
     const conversation = getBotConversation(from);
     conversation.messages.push({ role: "customer", text: userText });
@@ -607,7 +612,7 @@ app.get("/blocked", (req, res) => {
       <head><title>Blocked Numbers</title>${style}</head>
       <body>
         <h1>🚫 Blocked Numbers</h1>
-        <p class="subtitle">These numbers are ignored by the Baileys/Personal bot — but can still reply on the Meta bot.</p>
+        <p class="subtitle">These numbers are globally ignored by all bots.</p>
 
         <div class="cards">
 
@@ -707,7 +712,7 @@ app.get("/", (req, res) => {
     <html>
       <body style="font-family:sans-serif;padding:40px;background:#f4f4f9;">
         <h2>🚀 Stony_Tech AI Bot</h2>
-        <p>Meta Bot: ✅ Active (Replies to everyone)</p>
+        <p>Meta Bot: ✅ Active</p>
         <p>Main Number (+${baileysSessions.main.phone}):
           ${baileysSessions.main.connected ? "✅ Connected" : "❌ Not connected"}
         </p>
@@ -733,8 +738,7 @@ app.get("/health", (req, res) => {
     bot: "Stony_Tech AI Bot",
     mainConnected: baileysSessions.main.connected,
     secondConnected: baileysSessions.second.connected,
-    blockedMain: BLOCKED_NUMBERS.main.length,
-    blockedSecond: BLOCKED_NUMBERS.second.length,
+    totalBlocked: ALL_BLOCKED_NUMBERS.length,
     botChats: botConversations.size,
     personalChats: personalChats.size,
     uptime: process.uptime()
