@@ -238,6 +238,28 @@ function updateLeadInformation(conversation, text) {
 }
 
 // ============================================================
+// ROBUST MESSAGE TEXT EXTRACTOR
+// ============================================================
+
+function extractMessageText(msgObj) {
+  if (!msgObj) return "";
+  if (msgObj.conversation) return msgObj.conversation;
+  if (msgObj.extendedTextMessage?.text) return msgObj.extendedTextMessage.text;
+  if (msgObj.imageMessage?.caption) return msgObj.imageMessage.caption;
+  if (msgObj.videoMessage?.caption) return msgObj.videoMessage.caption;
+
+  // Unwrap containers
+  const inner = msgObj.ephemeralMessage?.message ||
+                msgObj.viewOnceMessage?.message ||
+                msgObj.viewOnceMessageV2?.message ||
+                msgObj.documentWithCaptionMessage?.message;
+  if (inner) {
+    return extractMessageText(inner);
+  }
+  return "";
+}
+
+// ============================================================
 // AI ENGINE (Gemini with Groq Cloud Fallback)
 // ============================================================
 
@@ -381,32 +403,31 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
     }
   });
 
-  sock.ev.on("messages.upsert", async ({ messages }) => {
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
     for (const msg of messages) {
       try {
-        if (!msg.message || msg.key.remoteJid === "status@broadcast") continue;
-
-        const jid = msg.key.remoteJid;
+        const jid = msg.key?.remoteJid;
+        if (!jid || jid === "status@broadcast") continue;
         if (!jid.endsWith("@s.whatsapp.net")) continue;
 
         const fromMe = msg.key.fromMe;
         const from   = jid.replace("@s.whatsapp.net", "");
         const label  = sessionKey === "main" ? "Main Personal Number (+233547100951)" : "Secondary Personal Number (+233533161186)";
 
-        const blocked = isBlocked(from);
+        const text = extractMessageText(msg.message);
 
-        if (blocked) {
-          console.log(`🚫 [BLOCKED] Incoming message on Baileys ${label} from +${from} -> Ignored.`);
+        // DEBUG LOGGING TO ENSURE EVERYTHING HITS THE RENDER LOGS
+        console.log(`🔍 [BAILEYS RAW EVENT (${sessionKey.toUpperCase()})] From: +${from} | FromMe: ${fromMe} | Type: ${type} | Text: "${text}"`);
+
+        if (!text.trim()) {
+          console.log(`⚠️ [BAILEYS] Ignored non-text or empty message from +${from}`);
           continue;
         }
 
-        const baseMsg = msg.message?.ephemeralMessage?.message || msg.message;
-        const text = baseMsg?.conversation ||
-                     baseMsg?.extendedTextMessage?.text ||
-                     baseMsg?.imageMessage?.caption || "";
-
-        if (!text.trim()) {
-          console.log(`⚠️ [UNBLOCKED] Empty or non-text message on Baileys ${label} from +${from} -> Ignored.`);
+        // CHECK BLOCKLIST (Baileys only)
+        const blocked = isBlocked(from);
+        if (blocked) {
+          console.log(`🚫 [BLOCKED] Incoming message on Baileys ${label} from +${from} -> Ignored.`);
           continue;
         }
 
