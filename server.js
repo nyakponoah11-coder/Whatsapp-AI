@@ -70,13 +70,7 @@ function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
     return cleanFrom === cleanNum || cleanFrom.endsWith(cleanNum) || cleanNum.endsWith(cleanFrom);
   });
 
-  if (matched) {
-    console.log(`🔍 Block Check -> Incoming: "${from}" | Blocked?: true (Manual List)`);
-    return true;
-  }
-
-  console.log(`🔍 Block Check -> Incoming: "${from}" (Clean: "${cleanFrom}") | Blocked?: false`);
-  return false;
+  return matched;
 }
 
 // ============================================================
@@ -367,25 +361,22 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
     if (qr) {
       baileysSessions[sessionKey].qr = qr;
-      // QR generation in terminal is now completely disabled. View it via the /qr web page.
     }
 
     if (connection === "open") {
       baileysSessions[sessionKey].connected = true;
       baileysSessions[sessionKey].qr = null;
-      console.log(`✅ Number ${phoneNumber} connected via Baileys!`);
+      console.log(`✅ Baileys [${sessionKey.toUpperCase()} - +${phoneNumber}] connected successfully!`);
     }
 
     if (connection === "close") {
       baileysSessions[sessionKey].connected = false;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log(`⚠️  Number ${phoneNumber} disconnected. Status: ${statusCode}. Reconnect: ${shouldReconnect}`);
+      console.log(`⚠️  Baileys [${sessionKey.toUpperCase()} - +${phoneNumber}] disconnected. Status: ${statusCode}. Reconnect: ${shouldReconnect}`);
       if (shouldReconnect) {
-        console.log(`🔄 Reconnecting ${phoneNumber} in 5 seconds...`);
+        console.log(`🔄 Reconnecting [${sessionKey.toUpperCase()}] in 5 seconds...`);
         setTimeout(() => startBaileysClient(sessionKey, phoneNumber, authFolder), 5000);
-      } else {
-        console.log(`❌ Logged out ${phoneNumber}. Delete ${authFolder} and restart.`);
       }
     }
   });
@@ -400,9 +391,12 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
         const fromMe = msg.key.fromMe;
         const from   = jid.replace("@s.whatsapp.net", "");
+        const label  = sessionKey === "main" ? "Main Personal Number (+233547100951)" : "Secondary Personal Number (+233533161186)";
 
-        if (isBlocked(from)) {
-          console.log(`🚫 Blocked message ignored on Baileys from: +${from}`);
+        const blocked = isBlocked(from);
+
+        if (blocked) {
+          console.log(`🚫 [BLOCKED] Incoming message on ${label} from +${from} -> Ignored.`);
           continue;
         }
 
@@ -412,11 +406,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
                      baseMsg?.imageMessage?.caption || "";
 
         if (!text.trim()) {
-          console.log(`⚠️ Ignored empty or non-text message from +${from}`);
+          console.log(`⚠️ [UNBLOCKED] Empty or non-text message on ${label} from +${from} -> Ignored.`);
           continue;
         }
 
-        console.log(`📥 Received text from unblocked +${from}: "${text.trim()}"`);
+        console.log(`📥 [UNBLOCKED] Incoming text on ${label} from +${from}: "${text.trim()}"`);
 
         if (fromMe) {
           const chat = getPersonalChat(from);
@@ -427,7 +421,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
             chat.fallbackTimer = null;
           }
           chat.messages.push({ role: "assistant", text: text.trim() });
-          console.log(`👤 Owner replied manually to +${from}. Timer cleared.`);
+          console.log(`👤 Owner replied manually on ${label} to +${from}. Fallback timer cleared.`);
           continue;
         }
 
@@ -437,10 +431,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
         updateLeadInformation(chat, text.trim());
         if (detectInterest(text.trim())) {
-          await notifyOwner(from, text.trim(), chat, `Baileys +${phoneNumber}`);
+          await notifyOwner(from, text.trim(), chat, label);
         }
 
         if (chat.botActive) {
+          console.log(`🤖 Bot is already active for +${from}. Generating response...`);
           let reply;
           try {
             reply = await askAI(chat.messages);
@@ -450,14 +445,15 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           chat.messages.push({ role: "assistant", text: reply });
           if (chat.messages.length > 20) chat.messages = chat.messages.slice(-20);
           await sock.sendMessage(jid, { text: reply });
+          console.log(`📤 Bot sent reply to +${from} on ${label}`);
           continue;
         }
 
-        console.log(`⏱️ Starting 1-minute fallback timer for unblocked +${from}...`);
-        startFallbackTimer(from, jid, chat, sock, phoneNumber);
+        console.log(`⏱️ Starting 1-minute fallback timer for unblocked +${from} on ${label}...`);
+        startFallbackTimer(from, jid, chat, sock, label);
 
       } catch (err) {
-        console.error(`Message handler error on ${phoneNumber}:`, err?.message);
+        console.error(`❌ Message handler error on Baileys [${sessionKey}]:`, err?.message);
       }
     }
   });
@@ -467,7 +463,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 // FALLBACK TIMER
 // ============================================================
 
-function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
+function startFallbackTimer(from, jid, chat, activeSock, label) {
   if (chat.fallbackTimer || chat.botActive) return;
 
   chat.ownerReplied = false;
@@ -475,10 +471,13 @@ function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
   chat.fallbackTimer = setTimeout(async () => {
     chat.fallbackTimer = null;
 
-    if (isBlocked(from)) return;
+    if (isBlocked(from)) {
+      console.log(`🚫 Timer fired, but +${from} is now blocked. Skipping takeover.`);
+      return;
+    }
 
     if (!chat.ownerReplied && activeSock) {
-      console.log(`⏰ Time passed — bot taking over chat with ${from} via ${phoneNumber}`);
+      console.log(`⏰ 1-minute timer expired! Owner didn't reply. Bot taking over chat with +${from} on ${label}`);
       chat.botActive = true;
 
       const unavailableMsg = "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you please?";
@@ -486,6 +485,7 @@ function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
       try {
         await activeSock.sendMessage(jid, { text: unavailableMsg });
         chat.messages.push({ role: "assistant", text: unavailableMsg });
+        console.log(`📤 Fallback introductory message sent to +${from}`);
 
         if (chat.lastCustomerMessage) {
           let aiReply;
@@ -496,10 +496,13 @@ function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
           }
           chat.messages.push({ role: "assistant", text: aiReply });
           await activeSock.sendMessage(jid, { text: aiReply });
+          console.log(`📤 Fallback AI response sent to +${from}`);
         }
       } catch (err) {
-        console.error("Fallback timer send error:", err?.message);
+        console.error("❌ Fallback timer send error:", err?.message);
       }
+    } else {
+      console.log(`ℹ️ Timer expired for +${from}, but owner already replied or socket missing. Skipping bot takeover.`);
     }
   }, FALLBACK_DELAY_MS);
 }
@@ -520,7 +523,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================================================
-// BOT NUMBER WEBHOOK (Meta)
+// BOT NUMBER WEBHOOK (Meta API)
 // ============================================================
 
 app.post("/webhook", async (req, res) => {
@@ -534,25 +537,30 @@ app.post("/webhook", async (req, res) => {
     const userText = message.text?.body?.trim();
     if (!from || !userText) return;
 
-    if (isBlocked(from)) {
-      console.log(`🚫 Blocked message ignored on Meta bot from: +${from}`);
+    const label = "Meta Bot";
+    const blocked = isBlocked(from);
+
+    if (blocked) {
+      console.log(`🚫 [BLOCKED] Incoming message on ${label} from +${from} -> Ignored.`);
       return;
     }
+
+    console.log(`📥 [UNBLOCKED] Incoming text on ${label} from +${from}: "${userText}"`);
 
     const conversation = getBotConversation(from);
     conversation.messages.push({ role: "customer", text: userText });
     updateLeadInformation(conversation, userText);
 
     if (detectInterest(userText)) {
-      console.log(`🔥 Potential client on Meta Bot: ${from}`);
-      await notifyOwner(from, userText, conversation, "Meta Bot");
+      console.log(`🔥 Potential client on ${label}: +${from}`);
+      await notifyOwner(from, userText, conversation, label);
     }
 
     let reply;
     try {
       reply = await askAI(conversation.messages);
     } catch (err) {
-      console.error("AI Engine error:", err?.message);
+      console.error("❌ AI Engine error on Meta Bot:", err?.message);
       reply = "Sorry, I'm having a little trouble responding right now. Please try again in a moment. 🙏";
     }
 
@@ -562,9 +570,10 @@ app.post("/webhook", async (req, res) => {
     if (conversation.messages.length > 20) conversation.messages = conversation.messages.slice(-20);
 
     await sendBotMessage(from, reply);
+    console.log(`📤 Meta Bot sent reply to +${from}`);
 
   } catch (err) {
-    console.error("Bot webhook error:", err?.response?.data || err?.message);
+    console.error("❌ Meta Bot webhook error:", err?.response?.data || err?.message);
   }
 });
 
