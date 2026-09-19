@@ -66,7 +66,7 @@ function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
   if (!from) return false;
   const cleanFrom = String(from).replace(/\D/g, "");
   
-  // Check manual block list only (Removed faulty 13-digit auto-block)
+  // Check manual block list only (No faulty 13-digit length traps)
   const matched = ignoredList.some(num => {
     const cleanNum = String(num).replace(/\D/g, "");
     return cleanFrom === cleanNum || cleanFrom.endsWith(cleanNum) || cleanNum.endsWith(cleanFrom);
@@ -401,7 +401,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
         if (!msg.message || msg.key.remoteJid === "status@broadcast") continue;
 
         const jid = msg.key.remoteJid;
-        // Ignore @lid extensions completely
+        // Ignore non-standard extensions completely
         if (!jid.endsWith("@s.whatsapp.net")) continue;
 
         const fromMe = msg.key.fromMe;
@@ -413,11 +413,18 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           continue;
         }
 
-        const text = msg.message?.conversation ||
-                     msg.message?.extendedTextMessage?.text ||
-                     msg.message?.imageMessage?.caption || "";
+        // 🛠️ Unwraps disappearing / ephemeral messages safely
+        const baseMsg = msg.message?.ephemeralMessage?.message || msg.message;
+        const text = baseMsg?.conversation ||
+                     baseMsg?.extendedTextMessage?.text ||
+                     baseMsg?.imageMessage?.caption || "";
 
-        if (!text.trim()) continue;
+        if (!text.trim()) {
+          console.log(`⚠️ Ignored empty or non-text message from +${from}`);
+          continue;
+        }
+
+        console.log(`📥 Received text from unblocked +${from}: "${text.trim()}"`);
 
         // ── You replied manually ──────────────────────────
         if (fromMe) {
@@ -429,6 +436,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
             chat.fallbackTimer = null;
           }
           chat.messages.push({ role: "assistant", text: text.trim() });
+          console.log(`👤 Owner replied manually to +${from}. Timer cleared.`);
           continue;
         }
 
@@ -458,6 +466,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
         }
 
         // Start fallback timer (runs uninterrupted from the first message)
+        console.log(`⏱️ Starting 1-minute fallback timer for unblocked +${from}...`);
         startFallbackTimer(from, jid, chat, sock, phoneNumber);
 
       } catch (err) {
