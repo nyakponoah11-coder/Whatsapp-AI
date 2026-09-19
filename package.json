@@ -1,12 +1,12 @@
 {
   "name": "stonytech-bot",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "@google/genai": "^0.7.0",
+    "@google/generative-ai": "^0.21.0",
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^6.7.16",
     "axios": "^1.6.0",
