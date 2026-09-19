@@ -86,7 +86,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL   = "gemini-2.5-flash-lite";
 
 const GROQ_API_KEY   = process.env.GROQ_API_KEY;
-const GROQ_MODEL     = "llama-3.3-70b-versatile";        
+const GROQ_MODEL     = "gemma2-9b-it";        
 
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 const groq  = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
