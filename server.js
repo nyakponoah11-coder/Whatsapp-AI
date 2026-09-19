@@ -59,16 +59,20 @@ const BLOCKED_NUMBERS = {
 const ALL_BLOCKED_NUMBERS = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
 
 // ============================================================
-// STRICT HELPER: CHECK IF NUMBER IS BLOCKED
+// STRICT HELPER WITH LOGGING: CHECK IF NUMBER IS BLOCKED
 // ============================================================
 
 function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
   if (!from) return false;
   const cleanFrom = String(from).replace(/\D/g, "");
-  return ignoredList.some(num => {
+  
+  const matched = ignoredList.some(num => {
     const cleanNum = String(num).replace(/\D/g, "");
     return cleanFrom === cleanNum || cleanFrom.endsWith(cleanNum) || cleanNum.endsWith(cleanFrom);
   });
+
+  console.log(`🔍 Block Check -> Incoming: "${from}" (Clean: "${cleanFrom}") | Blocked?: ${matched}`);
+  return matched;
 }
 
 // ============================================================
