@@ -47,7 +47,7 @@ const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
 
 // ============================================================
-// BLOCKED NUMBERS & LIDS
+// BLOCKED NUMBERS
 // ============================================================
 
 const BLOCKED_NUMBERS = {
@@ -59,14 +59,14 @@ const BLOCKED_NUMBERS = {
 const ALL_BLOCKED_NUMBERS = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
 
 // ============================================================
-// SMART HELPER: CHECK IF NUMBER OR LID IS BLOCKED
+// SMART HELPER: CHECK IF NUMBER IS BLOCKED
 // ============================================================
 
 function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
   if (!from) return false;
   const cleanFrom = String(from).replace(/\D/g, "");
   
-  // 1. Check manual block list
+  // Check manual block list only (Removed faulty 13-digit auto-block)
   const matched = ignoredList.some(num => {
     const cleanNum = String(num).replace(/\D/g, "");
     return cleanFrom === cleanNum || cleanFrom.endsWith(cleanNum) || cleanNum.endsWith(cleanFrom);
@@ -74,12 +74,6 @@ function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
 
   if (matched) {
     console.log(`🔍 Block Check -> Incoming: "${from}" | Blocked?: true (Manual List)`);
-    return true;
-  }
-
-  // 2. Auto-block raw WhatsApp LIDs (long numeric strings of 13+ digits)
-  if (cleanFrom.length >= 13) {
-    console.log(`🔍 Block Check -> Incoming: "${from}" | Blocked?: true (Auto-blocked LID format)`);
     return true;
   }
 
@@ -195,7 +189,8 @@ function getPersonalChat(phone) {
       ownerReplied: false,
       botActive: false,
       fallbackTimer: null,
-      lastCustomerMessage: null
+      lastCustomerMessage: null,
+      lead: { name: null, business: null, businessType: null, requirement: null, notifiedOwner: false }
     });
   }
   return personalChats.get(phone);
@@ -315,13 +310,13 @@ Respond to the customer based on the business rules.
 }
 
 // ============================================================
-// NOTIFY OWNER via bot number
+// NOTIFY OWNER via Meta API (bot number)
 // ============================================================
 
-async function notifyOwner(from, userText, conversation) {
+async function notifyOwner(from, userText, conversation, sourceLabel = "Meta Bot") {
   if (conversation.notifiedOwner) return;
   const lead = conversation.lead;
-  const msg = `🚨 NEW POTENTIAL CLIENT\n\n📱 Customer: +${from}\n🏢 Business: ${lead.business || "Not provided"}\n💼 Business Type: ${lead.businessType || "Not provided"}\n🤖 Bot Needed: ${lead.requirement || "Not fully identified"}\n💬 Message: "${userText}"\n🔥 Interest: HIGH\n\n👉 Please follow up with this customer.`;
+  const msg = `🚨 NEW POTENTIAL CLIENT (${sourceLabel})\n\n📱 Customer: +${from}\n🏢 Business: ${lead.business || "Not provided"}\n💼 Business Type: ${lead.businessType || "Not provided"}\n🤖 Bot Needed: ${lead.requirement || "Not fully identified"}\n💬 Message: "${userText}"\n🔥 Interest: HIGH\n\n👉 Please follow up with this customer.`;
   try {
     await sendBotMessage(OWNER_NUMBER, msg);
     conversation.notifiedOwner = true;
@@ -442,6 +437,12 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
         chat.messages.push({ role: "customer", text: text.trim() });
         chat.lastCustomerMessage = text.trim();
 
+        // Update lead data & check for interest to notify owner via Meta bot
+        updateLeadInformation(chat, text.trim());
+        if (detectInterest(text.trim())) {
+          await notifyOwner(from, text.trim(), chat, `Baileys +${phoneNumber}`);
+        }
+
         // Bot already active → reply immediately
         if (chat.botActive) {
           let reply;
@@ -456,8 +457,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           continue;
         }
 
-        // Start fallback timer
-        chat.ownerReplied = false;
+        // Start fallback timer (runs uninterrupted from the first message)
         startFallbackTimer(from, jid, chat, sock, phoneNumber);
 
       } catch (err) {
@@ -472,10 +472,13 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 // ============================================================
 
 function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
-  if (chat.fallbackTimer) clearTimeout(chat.fallbackTimer);
+  if (chat.fallbackTimer || chat.botActive) return;
+
+  chat.ownerReplied = false;
 
   chat.fallbackTimer = setTimeout(async () => {
-    // Secondary safety check: ensure number wasn't blocked while waiting
+    chat.fallbackTimer = null;
+
     if (isBlocked(from)) return;
 
     if (!chat.ownerReplied && activeSock) {
@@ -546,8 +549,8 @@ app.post("/webhook", async (req, res) => {
     updateLeadInformation(conversation, userText);
 
     if (detectInterest(userText)) {
-      console.log(`🔥 Potential client: ${from}`);
-      await notifyOwner(from, userText, conversation);
+      console.log(`🔥 Potential client on Meta Bot: ${from}`);
+      await notifyOwner(from, userText, conversation, "Meta Bot");
     }
 
     let reply;
@@ -666,7 +669,7 @@ app.get("/blocked", (req, res) => {
 });
 
 // ============================================================
-// QR CODE PAGE (Refreshes every 10 minutes)
+// QR CODE PAGE
 // ============================================================
 
 app.get("/qr", (req, res) => {
