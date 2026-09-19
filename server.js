@@ -46,7 +46,7 @@ const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
 
 // ============================================================
-// BLOCKED NUMBERS
+// BLOCKED NUMBERS (Applies ONLY to Baileys personal numbers)
 // ============================================================
 
 const BLOCKED_NUMBERS = {
@@ -54,11 +54,11 @@ const BLOCKED_NUMBERS = {
   second: ["233535840183", "233267103209", "233547100951"]
 };
 
-// Combine all blocked numbers globally
+// Combine all blocked numbers globally for Baileys
 const ALL_BLOCKED_NUMBERS = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
 
 // ============================================================
-// SMART HELPER: CHECK IF NUMBER IS BLOCKED
+// SMART HELPER: CHECK IF NUMBER IS BLOCKED (Baileys only)
 // ============================================================
 
 function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
@@ -396,7 +396,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
         const blocked = isBlocked(from);
 
         if (blocked) {
-          console.log(`🚫 [BLOCKED] Incoming message on ${label} from +${from} -> Ignored.`);
+          console.log(`🚫 [BLOCKED] Incoming message on Baileys ${label} from +${from} -> Ignored.`);
           continue;
         }
 
@@ -406,11 +406,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
                      baseMsg?.imageMessage?.caption || "";
 
         if (!text.trim()) {
-          console.log(`⚠️ [UNBLOCKED] Empty or non-text message on ${label} from +${from} -> Ignored.`);
+          console.log(`⚠️ [UNBLOCKED] Empty or non-text message on Baileys ${label} from +${from} -> Ignored.`);
           continue;
         }
 
-        console.log(`📥 [UNBLOCKED] Incoming text on ${label} from +${from}: "${text.trim()}"`);
+        console.log(`📥 [UNBLOCKED] Incoming text on Baileys ${label} from +${from}: "${text.trim()}"`);
 
         if (fromMe) {
           const chat = getPersonalChat(from);
@@ -421,7 +421,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
             chat.fallbackTimer = null;
           }
           chat.messages.push({ role: "assistant", text: text.trim() });
-          console.log(`👤 Owner replied manually on ${label} to +${from}. Fallback timer cleared.`);
+          console.log(`👤 Owner replied manually on Baileys ${label} to +${from}. Fallback timer cleared.`);
           continue;
         }
 
@@ -445,11 +445,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           chat.messages.push({ role: "assistant", text: reply });
           if (chat.messages.length > 20) chat.messages = chat.messages.slice(-20);
           await sock.sendMessage(jid, { text: reply });
-          console.log(`📤 Bot sent reply to +${from} on ${label}`);
+          console.log(`📤 Bot sent reply to +${from} on Baileys ${label}`);
           continue;
         }
 
-        console.log(`⏱️ Starting 1-minute fallback timer for unblocked +${from} on ${label}...`);
+        console.log(`⏱️ Starting 1-minute fallback timer for unblocked +${from} on Baileys ${label}...`);
         startFallbackTimer(from, jid, chat, sock, label);
 
       } catch (err) {
@@ -523,7 +523,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================================================
-// BOT NUMBER WEBHOOK (Meta API)
+// BOT NUMBER WEBHOOK (Meta API - OPEN WIDE TO ALL NUMBERS)
 // ============================================================
 
 app.post("/webhook", async (req, res) => {
@@ -538,14 +538,9 @@ app.post("/webhook", async (req, res) => {
     if (!from || !userText) return;
 
     const label = "Meta Bot";
-    const blocked = isBlocked(from);
 
-    if (blocked) {
-      console.log(`🚫 [BLOCKED] Incoming message on ${label} from +${from} -> Ignored.`);
-      return;
-    }
-
-    console.log(`📥 [UNBLOCKED] Incoming text on ${label} from +${from}: "${userText}"`);
+    // Meta bot is open wide to ALL numbers (no block check)
+    console.log(`📥 [OPEN/UNBLOCKED] Incoming text on ${label} from +${from}: "${userText}"`);
 
     const conversation = getBotConversation(from);
     conversation.messages.push({ role: "customer", text: userText });
@@ -635,8 +630,8 @@ app.get("/blocked", (req, res) => {
     <html>
       <head><title>Blocked Numbers</title>${style}</head>
       <body>
-        <h1>🚫 Blocked Numbers</h1>
-        <p class="subtitle">These numbers are globally ignored by all bots.</p>
+        <h1>🚫 Blocked Numbers (Baileys Personal Numbers Only)</h1>
+        <p class="subtitle">These numbers are ignored on personal numbers. Meta Bot remains open to all.</p>
 
         <div class="cards">
 
@@ -736,7 +731,7 @@ app.get("/", (req, res) => {
     <html>
       <body style="font-family:sans-serif;padding:40px;background:#f4f4f9;">
         <h2>🚀 Stony_Tech AI Bot</h2>
-        <p>Meta Bot: ✅ Active</p>
+        <p>Meta Bot (Open to All): ✅ Active</p>
         <p>Main Number (+${baileysSessions.main.phone}):
           ${baileysSessions.main.connected ? "✅ Connected" : "❌ Not connected"}
         </p>
