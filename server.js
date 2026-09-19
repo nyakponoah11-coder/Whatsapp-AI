@@ -102,7 +102,7 @@ const GEMINI_API_KEY =
 const GROQ_API_KEY =
   process.env.GROQ_API_KEY;
 
-const GEMINI_MODEL = "gemini-1.5-flash";
+const GEMINI_MODEL = "gemini-3.6-flash";
 
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 
