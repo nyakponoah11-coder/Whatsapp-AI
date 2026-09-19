@@ -5,7 +5,6 @@ const axios = require("axios");
 const fs = require("fs");
 const pino = require("pino");
 
-const { GoogleGenAI } = require("@google/genai");
 const { Groq } = require("groq-sdk");
 
 const makeWASocket = require("@whiskeysockets/baileys").default;
@@ -79,17 +78,13 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_VERIFY_TOKEN    = process.env.WHATSAPP_VERIFY_TOKEN;
 
 // =====================================================
-// AI CONFIG  ← FIXED MODEL NAMES
+// GROQ AI CONFIG
 // =====================================================
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GROQ_API_KEY   = process.env.GROQ_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_MODEL = "gemma2-9b-it";        
 
-const GEMINI_MODEL = "gemini-3.6-flash";
-const GROQ_MODEL = "openai/gpt-oss-120b";       
-
-const genAI = GEMINI_API_KEY ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
-const groq   = GROQ_API_KEY  ? new Groq({ apiKey: GROQ_API_KEY })          : null;
+const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 
 // =====================================================
 // MEMORY
@@ -252,57 +247,29 @@ Rules:
 `.trim();
 
 // =====================================================
-// GEMINI
-// =====================================================
-
-async function askGemini(messages) {
-  if (!genAI) throw new Error("Gemini API key is missing");
-  console.log("🧠 Asking Gemini...");
-  const conversation = buildConversationPrompt(messages);
-  const prompt = `${SYSTEM_PROMPT}\n\nConversation:\n${conversation}\n\nReply naturally to the customer.`;
-  const result = await genAI.models.generateContent({ model: GEMINI_MODEL, contents: prompt });
-  const text = result?.text || result?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
-  if (!text.trim()) throw new Error("Gemini returned an empty response");
-  return text.trim();
-}
-
-// =====================================================
-// GROQ
-// =====================================================
-
-async function askGroq(messages) {
-  if (!groq) throw new Error("Groq API key is missing");
-  console.log("🔄 Falling back to Groq...");
-  const conversation = buildConversationPrompt(messages);
-  const completion = await groq.chat.completions.create({
-    model: GROQ_MODEL,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: conversation }
-    ],
-    temperature: 0.7,
-    max_tokens: 500
-  });
-  const text = completion?.choices?.[0]?.message?.content;
-  if (!text) throw new Error("Groq returned an empty response");
-  return text.trim();
-}
-
-// =====================================================
-// AI WITH FALLBACK
+// GROQ AI HANDLER
 // =====================================================
 
 async function askAI(messages) {
+  if (!groq) throw new Error("Groq API key is missing");
+  console.log("🔄 Asking Groq...");
   try {
-    return await askGemini(messages);
-  } catch (geminiError) {
-    console.error("❌ Gemini failed:", geminiError.message);
-    try {
-      return await askGroq(messages);
-    } catch (groqError) {
-      console.error("❌ Groq failed:", groqError.message);
-      return "Sorry, I'm having a little trouble responding right now. Please try again shortly.";
-    }
+    const conversation = buildConversationPrompt(messages);
+    const completion = await groq.chat.completions.create({
+      model: GROQ_MODEL,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: conversation }
+      ],
+      temperature: 0.7,
+      max_tokens: 500
+    });
+    const text = completion?.choices?.[0]?.message?.content;
+    if (!text) throw new Error("Groq returned an empty response");
+    return text.trim();
+  } catch (error) {
+    console.error("❌ Groq failed:", error.message);
+    return "Sorry, I'm having a little trouble responding right now. Please try again shortly.";
   }
 }
 
@@ -376,7 +343,6 @@ function startFallbackTimer(sessionKey, phone, jid) {
   chat.fallbackTimer = setTimeout(async () => {
     chat.fallbackTimer = null;
 
-    // 🚫 Block check inside timer
     if (isBlockedForSession(sessionKey, normalizedPhone)) {
       console.log(`🚫 +${normalizedPhone} is blocked — AI takeover cancelled.`);
       return;
@@ -436,13 +402,11 @@ function startFallbackTimer(sessionKey, phone, jid) {
 // =====================================================
 
 async function resolveSenderNumber(sock, remoteJid, msg) {
-  // 1. Normal JID — easiest case
   if (remoteJid?.endsWith("@s.whatsapp.net")) {
     const phone = normalizePhone(remoteJid);
     return phone;
   }
 
-  // 2. Check our LID→phone map first (built up over time)
   if (remoteJid?.endsWith("@lid")) {
     const cached = phoneFromLid(remoteJid);
     if (cached) {
@@ -450,7 +414,6 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
       return cached;
     }
 
-    // 3. Try Baileys LID mapping API
     try {
       const lidMapping = sock?.authState?.creds?.lid ||
                          sock?.signalRepository?.lidMapping;
@@ -467,7 +430,6 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
       console.error("❌ LID API failed:", err.message);
     }
 
-    // 4. Try contacts store
     try {
       const contacts = sock?.store?.contacts || {};
       const contact  = contacts[remoteJid];
@@ -478,7 +440,6 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
       }
     } catch (err) {}
 
-    // 5. Try participant from message
     const participant = msg?.participant ||
                         msg?.key?.participant ||
                         msg?.key?.remoteJid;
@@ -489,8 +450,6 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
       return phone;
     }
 
-    // 6. Use the LID number itself as a last resort
-    // WhatsApp LIDs often contain the real number encoded
     const lidNumber = remoteJid.replace("@lid", "").replace(/\D/g, "");
     if (lidNumber && lidNumber.length >= 10) {
       console.log(`⚠️  Using raw LID number as fallback: +${lidNumber}`);
@@ -534,7 +493,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
   baileysSessions[sessionKey].sock = sock;
   sock.ev.on("creds.update", saveCreds);
 
-  // ── Connection updates ──────────────────────────────
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -563,21 +521,15 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
     }
   });
 
-  // ── Contacts update — build LID→phone map ──────────
   sock.ev.on("contacts.update", (contacts) => {
     for (const contact of contacts) {
-      if (contact.id?.endsWith("@lid") && contact.notify) {
-        // pushName doesn't give us phone but id might
-      }
       if (contact.id?.endsWith("@s.whatsapp.net")) {
-        // Save normal contacts for cross-reference
         const phone = normalizePhone(contact.id);
         if (contact.lid) saveLidMapping(contact.lid, phone);
       }
     }
   });
 
-  // ── Contacts upsert — build LID→phone map ──────────
   sock.ev.on("contacts.upsert", (contacts) => {
     for (const contact of contacts) {
       if (contact.id?.endsWith("@s.whatsapp.net") && contact.lid) {
@@ -587,7 +539,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
     }
   });
 
-  // ── Incoming messages ───────────────────────────────
   sock.ev.on("messages.upsert", async ({ messages }) => {
     for (const msg of messages) {
       try {
@@ -603,18 +554,15 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
 
         console.log(`\n📩 [${sessionKey}] JID: ${remoteJid} | fromMe: ${msg.key?.fromMe}`);
 
-        // Resolve number
         const from = await resolveSenderNumber(sock, remoteJid, msg);
 
         if (!from) {
           console.log(`⚠️ Could not resolve number for JID: ${remoteJid}`);
-          // Still try to cache for future messages
           continue;
         }
 
         console.log(`From: +${from}`);
 
-        // Cache LID→phone for future messages
         if (remoteJid.endsWith("@lid")) {
           saveLidMapping(remoteJid, from);
         }
@@ -623,7 +571,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
         chat.jids.add(remoteJid);
         chat.lastJid = remoteJid;
 
-        // ── Owner replied ───────────────────────────
         if (msg.key?.fromMe) {
           const text = extractMessageText(msg.message);
           if (text) {
@@ -636,7 +583,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
           continue;
         }
 
-        // 🚫 Block check
         if (isBlockedForSession(sessionKey, from)) {
           console.log(`🚫 BLOCKED: +${from} — no reply, no timer`);
           cancelFallbackTimer(chat);
@@ -658,7 +604,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
         updateLeadInformation(chat, text);
         if (detectInterest(text)) await notifyOwner(chat, from);
 
-        // Bot already active → reply immediately
         if (chat.botActive) {
           console.log(`🤖 Bot active — replying immediately to +${from}`);
           const aiReply = await askAI(chat.messages);
@@ -668,7 +613,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
           continue;
         }
 
-        // Start fallback timer
         startFallbackTimer(sessionKey, from, remoteJid);
 
       } catch (error) {
@@ -789,15 +733,14 @@ app.get("/blocked", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    geminiModel: GEMINI_MODEL,
+    aiEngine: "Groq Only",
     groqModel: GROQ_MODEL,
     main:   { phone: baileysSessions.main.phone,   connected: baileysSessions.main.connected },
     second: { phone: baileysSessions.second.phone, connected: baileysSessions.second.connected },
     lidMappings: lidToPhone.size,
     personalChats: personalChats.size,
     metaChats: metaChats.size,
-    geminiConfigured: Boolean(GEMINI_API_KEY),
-    groqConfigured:   Boolean(GROQ_API_KEY)
+    groqConfigured: Boolean(GROQ_API_KEY)
   });
 });
 
@@ -808,8 +751,8 @@ app.get("/health", (req, res) => {
 app.get("/", (req, res) => {
   res.send(`<html><body style="font-family:Arial;background:#111;color:white;text-align:center;padding:50px">
     <h1>🤖 Stony_Tech AI Assistant</h1>
-    <p>WhatsApp automation system is running.</p>
-    <p><a href="/qr"      style="color:#00ff88;font-size:20px">📱 Open WhatsApp QR</a></p>
+    <p>WhatsApp automation system is running on Groq.</p>
+    <p><a href="/qr"     style="color:#00ff88;font-size:20px">📱 Open WhatsApp QR</a></p>
     <p><a href="/blocked" style="color:#ff6b6b;font-size:20px">🚫 Blocked Numbers</a></p>
     <p><a href="/health"  style="color:#00aaff;font-size:20px">❤️  System Health</a></p>
   </body></html>`);
@@ -822,7 +765,7 @@ app.use((req, res) => res.status(404).json({ error: "Route not found" }));
 // =====================================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Stony_Tech running on port ${PORT}`);
+  console.log(`🚀 Stony_Tech running on port ${PORT} (Groq Powered)`);
   console.log(`📱 Open /qr to scan QR codes`);
   startBaileysClient("main",   baileysSessions.main.phone,   AUTH_FOLDER_MAIN);
   startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC);
