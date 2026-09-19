@@ -60,11 +60,15 @@ if (!WHATSAPP_VERIFY_TOKEN) {
 // ============================================================
 
 const ai = GEMINI_API_KEY
-  ? new GoogleGenAI({ apiKey: GEMINI_API_KEY })
+  ? new GoogleGenAI({
+      apiKey: GEMINI_API_KEY
+    })
   : null;
 
 const groq = GROQ_API_KEY
-  ? new Groq({ apiKey: GROQ_API_KEY })
+  ? new Groq({
+      apiKey: GROQ_API_KEY
+    })
   : null;
 
 // ============================================================
@@ -73,7 +77,8 @@ const groq = GROQ_API_KEY
 
 const OWNER_NUMBER = "233547100951";
 
-// 1 minute
+// IMPORTANT:
+// Customer gets 1 minute for owner to manually reply.
 const FALLBACK_DELAY_MS = 1 * 60 * 1000;
 
 const AUTH_FOLDER_MAIN = "./baileys_auth";
@@ -81,10 +86,7 @@ const AUTH_FOLDER_SEC = "./baileys_auth_second";
 
 // ============================================================
 // BLOCKED NUMBERS
-// IMPORTANT:
-// These are SESSION-SPECIFIC.
-// A number blocked on MAIN is blocked on MAIN.
-// A number blocked on SECOND is blocked on SECOND.
+// SESSION-SPECIFIC
 // ============================================================
 
 const BLOCKED_NUMBERS = {
@@ -168,6 +170,8 @@ function getPersonalChat(phone) {
 
       lastCustomerMessage: null,
 
+      lastJid: null,
+
       lead: {
         name: null,
         business: null,
@@ -181,30 +185,58 @@ function getPersonalChat(phone) {
 }
 
 // ============================================================
-// NORMALIZE PHONE NUMBER
+// NORMALIZE PHONE
 // ============================================================
 
 function normalizePhone(number) {
   if (!number) return "";
 
-  return String(number).replace(/\D/g, "");
+  let value = String(number).trim();
+
+  // Remove JID
+  value = value
+    .replace("@s.whatsapp.net", "")
+    .replace("@lid", "")
+    .replace("@hosted", "");
+
+  // Baileys can return device-scoped numbers such as:
+  // 233547100951:0@s.whatsapp.net
+  //
+  // Remove the device part.
+  value = value.split(":")[0];
+
+  return value.replace(/\D/g, "");
+}
+
+// ============================================================
+// CONVERT PHONE TO JID
+// ============================================================
+
+function phoneToJid(phone) {
+  const clean = normalizePhone(phone);
+
+  if (!clean) return null;
+
+  return `${clean}@s.whatsapp.net`;
 }
 
 // ============================================================
 // CHECK BLOCKED NUMBER
-// SESSION-SPECIFIC
 // ============================================================
 
 function isBlockedForSession(sessionKey, from) {
   const cleanFrom = normalizePhone(from);
 
-  if (!cleanFrom) return false;
+  if (!cleanFrom) {
+    return false;
+  }
 
   const blockedList =
     BLOCKED_NUMBERS[sessionKey] || [];
 
   return blockedList.some((number) => {
-    const cleanNumber = normalizePhone(number);
+    const cleanNumber =
+      normalizePhone(number);
 
     return (
       cleanFrom === cleanNumber ||
@@ -212,6 +244,112 @@ function isBlockedForSession(sessionKey, from) {
       cleanNumber.endsWith(cleanFrom)
     );
   });
+}
+
+// ============================================================
+// RESOLVE BAILEYS LID -> PHONE NUMBER
+// ============================================================
+
+async function resolveSenderNumber(sock, msg) {
+  const key = msg?.key || {};
+
+  const remoteJid = key.remoteJid;
+
+  if (!remoteJid) {
+    return null;
+  }
+
+  // Normal phone JID
+  if (
+    remoteJid.endsWith(
+      "@s.whatsapp.net"
+    )
+  ) {
+    return {
+      phone: normalizePhone(remoteJid),
+      jid: remoteJid,
+      source: "phone-jid"
+    };
+  }
+
+  // ==========================================================
+  // Try remoteJidAlt first
+  // ==========================================================
+
+  const alternatives = [
+    key.remoteJidAlt,
+    key.participantPn,
+    key.senderPn
+  ];
+
+  for (const alternative of alternatives) {
+    if (
+      alternative &&
+      String(alternative).includes(
+        "@s.whatsapp.net"
+      )
+    ) {
+      const phone =
+        normalizePhone(alternative);
+
+      if (phone) {
+        return {
+          phone,
+          jid: phoneToJid(phone),
+          source: "message-alt"
+        };
+      }
+    }
+  }
+
+  // ==========================================================
+  // LID MAPPING
+  // ==========================================================
+
+  if (
+    remoteJid.endsWith("@lid")
+  ) {
+    try {
+      const lidMapping =
+        sock?.signalRepository
+          ?.lidMapping;
+
+      if (
+        lidMapping &&
+        typeof lidMapping.getPNForLID ===
+          "function"
+      ) {
+        const pn =
+          await lidMapping.getPNForLID(
+            remoteJid
+          );
+
+        if (pn) {
+          const phone =
+            normalizePhone(pn);
+
+          if (phone) {
+            console.log(
+              `🔗 LID resolved: ${remoteJid} → +${phone}`
+            );
+
+            return {
+              phone,
+              jid: phoneToJid(phone),
+              source: "lid-mapping"
+            };
+          }
+        }
+      }
+    } catch (error) {
+      console.log(
+        `⚠️ LID resolution failed for ${remoteJid}:`,
+        error?.message || error
+      );
+    }
+  }
+
+  return null;
 }
 
 // ============================================================
@@ -259,7 +397,8 @@ YOUR JOB:
 // ============================================================
 
 function detectInterest(text) {
-  const msg = text.toLowerCase().trim();
+  const msg =
+    text.toLowerCase().trim();
 
   const patterns = [
     "i'm interested",
@@ -291,8 +430,12 @@ function detectInterest(text) {
 // LEAD INFORMATION
 // ============================================================
 
-function updateLeadInformation(conversation, text) {
-  const lower = text.toLowerCase();
+function updateLeadInformation(
+  conversation,
+  text
+) {
+  const lower =
+    text.toLowerCase();
 
   const businessTypes = [
     "restaurant",
@@ -308,9 +451,13 @@ function updateLeadInformation(conversation, text) {
     "business"
   ];
 
-  for (const type of businessTypes) {
+  for (
+    const type of businessTypes
+  ) {
     if (lower.includes(type)) {
-      conversation.lead.businessType = type;
+      conversation.lead.businessType =
+        type;
+
       break;
     }
   }
@@ -329,66 +476,89 @@ function extractMessageText(msgObj) {
     return msgObj;
   }
 
-  // Normal text
   if (msgObj.conversation) {
     return msgObj.conversation;
   }
 
-  // Extended text
-  if (msgObj.extendedTextMessage?.text) {
+  if (
+    msgObj.extendedTextMessage?.text
+  ) {
     return msgObj.extendedTextMessage.text;
   }
 
-  // Image caption
-  if (msgObj.imageMessage?.caption) {
+  if (
+    msgObj.imageMessage?.caption
+  ) {
     return msgObj.imageMessage.caption;
   }
 
-  // Video caption
-  if (msgObj.videoMessage?.caption) {
+  if (
+    msgObj.videoMessage?.caption
+  ) {
     return msgObj.videoMessage.caption;
   }
 
-  // Document caption
-  if (msgObj.documentMessage?.caption) {
+  if (
+    msgObj.documentMessage?.caption
+  ) {
     return msgObj.documentMessage.caption;
   }
 
-  // Buttons
-  if (msgObj.buttonsResponseMessage?.selectedButtonId) {
-    return msgObj.buttonsResponseMessage.selectedButtonId;
+  if (
+    msgObj.buttonsResponseMessage
+      ?.selectedButtonId
+  ) {
+    return msgObj
+      .buttonsResponseMessage
+      .selectedButtonId;
   }
 
-  if (msgObj.buttonsResponseMessage?.selectedDisplayText) {
-    return msgObj.buttonsResponseMessage.selectedDisplayText;
+  if (
+    msgObj.buttonsResponseMessage
+      ?.selectedDisplayText
+  ) {
+    return msgObj
+      .buttonsResponseMessage
+      .selectedDisplayText;
   }
 
-  // List response
-  if (msgObj.listResponseMessage?.title) {
-    return msgObj.listResponseMessage.title;
+  if (
+    msgObj.listResponseMessage?.title
+  ) {
+    return msgObj
+      .listResponseMessage
+      .title;
   }
 
-  if (msgObj.listResponseMessage?.singleSelectReply?.selectedRowId) {
-    return msgObj.listResponseMessage.singleSelectReply.selectedRowId;
+  if (
+    msgObj.listResponseMessage
+      ?.singleSelectReply
+      ?.selectedRowId
+  ) {
+    return msgObj
+      .listResponseMessage
+      .singleSelectReply
+      .selectedRowId;
   }
 
-  // Template button
   if (
     msgObj.templateButtonReplyMessage
       ?.selectedId
   ) {
-    return msgObj.templateButtonReplyMessage.selectedId;
+    return msgObj
+      .templateButtonReplyMessage
+      .selectedId;
   }
 
-  // Interactive response
   if (
     msgObj.interactiveResponseMessage
       ?.body?.text
   ) {
-    return msgObj.interactiveResponseMessage.body.text;
+    return msgObj
+      .interactiveResponseMessage
+      .body.text;
   }
 
-  // Nested messages
   const innerKeys = [
     "ephemeralMessage",
     "viewOnceMessage",
@@ -397,11 +567,16 @@ function extractMessageText(msgObj) {
     "documentWithCaptionMessage"
   ];
 
-  for (const key of innerKeys) {
-    if (msgObj[key]?.message) {
-      const extracted = extractMessageText(
-        msgObj[key].message
-      );
+  for (
+    const key of innerKeys
+  ) {
+    if (
+      msgObj[key]?.message
+    ) {
+      const extracted =
+        extractMessageText(
+          msgObj[key].message
+        );
 
       if (extracted) {
         return extracted;
@@ -417,12 +592,13 @@ function extractMessageText(msgObj) {
 // ============================================================
 
 async function askAI(messages) {
-  const history = messages
-    .slice(-12)
-    .map((message) => {
-      return `${message.role}: ${message.text}`;
-    })
-    .join("\n");
+  const history =
+    messages
+      .slice(-12)
+      .map((message) => {
+        return `${message.role}: ${message.text}`;
+      })
+      .join("\n");
 
   const prompt = `
 BUSINESS RULES:
@@ -444,7 +620,9 @@ Respond to the customer naturally and concisely.
 
   if (ai) {
     try {
-      console.log("🤖 Asking Gemini...");
+      console.log(
+        "🤖 Asking Gemini..."
+      );
 
       const result =
         await ai.models.generateContent({
@@ -456,7 +634,10 @@ Respond to the customer naturally and concisely.
         result.text?.trim();
 
       if (reply) {
-        console.log("✅ Gemini response received");
+        console.log(
+          "✅ Gemini response received"
+        );
+
         return reply;
       }
     } catch (err) {
@@ -490,7 +671,8 @@ Respond to the customer naturally and concisely.
             }
           ],
 
-          model: "llama3-70b-8192",
+          model:
+            "llama3-70b-8192",
 
           temperature: 0.7
         });
@@ -524,7 +706,10 @@ Respond to the customer naturally and concisely.
 // SEND META WHATSAPP MESSAGE
 // ============================================================
 
-async function sendBotMessage(to, body) {
+async function sendBotMessage(
+  to,
+  body
+) {
   if (
     !WHATSAPP_ACCESS_TOKEN ||
     !WHATSAPP_PHONE_NUMBER_ID
@@ -543,9 +728,11 @@ async function sendBotMessage(to, body) {
       url,
 
       {
-        messaging_product: "whatsapp",
+        messaging_product:
+          "whatsapp",
 
-        recipient_type: "individual",
+        recipient_type:
+          "individual",
 
         to,
 
@@ -581,11 +768,14 @@ async function notifyOwner(
   conversation,
   sourceLabel
 ) {
-  if (conversation.notifiedOwner) {
+  if (
+    conversation.notifiedOwner
+  ) {
     return;
   }
 
-  const lead = conversation.lead;
+  const lead =
+    conversation.lead;
 
   const message = `
 🚨 NEW POTENTIAL CLIENT (${sourceLabel})
@@ -607,7 +797,8 @@ ${lead.businessType || "Not provided"}
       message
     );
 
-    conversation.notifiedOwner = true;
+    conversation.notifiedOwner =
+      true;
 
     console.log(
       `📢 Owner notified about +${from}`
@@ -632,50 +823,112 @@ function startFallbackTimer(
   label,
   sessionKey
 ) {
-  // Timer already exists
-  if (chat.fallbackTimer) {
+  // ==========================================================
+  // BLOCK CHECK
+  // ==========================================================
+
+  if (
+    isBlockedForSession(
+      sessionKey,
+      from
+    )
+  ) {
+    console.log(
+      `🚫 +${from} is blocked on ${label}. Timer NOT started.`
+    );
+
     return;
   }
 
-  // Bot already active
+  // ==========================================================
+  // TIMER ALREADY RUNNING
+  // ==========================================================
+
+  if (chat.fallbackTimer) {
+    console.log(
+      `⏳ Timer already running for +${from}`
+    );
+
+    return;
+  }
+
+  // ==========================================================
+  // BOT ALREADY ACTIVE
+  // ==========================================================
+
   if (chat.botActive) {
+    console.log(
+      `🤖 AI already active for +${from}`
+    );
+
     return;
   }
 
   chat.ownerReplied = false;
 
   console.log(
-    `⏱️ Starting 1-minute timer for +${from} on ${label}`
+    `⏱️ 1-minute timer STARTED for +${from} on ${label}`
   );
 
   chat.fallbackTimer =
-    setTimeout(async () => {
-      chat.fallbackTimer = null;
+    setTimeout(
+      async () => {
+        chat.fallbackTimer =
+          null;
 
-      // Check block again before sending
-      if (
-        isBlockedForSession(
-          sessionKey,
-          from
-        )
-      ) {
         console.log(
-          `🚫 +${from} became/was blocked on ${label}. No fallback reply.`
+          `⏰ 1-minute timer FINISHED for +${from}`
         );
 
-        return;
-      }
+        // ======================================================
+        // CHECK BLOCK AGAIN
+        // ======================================================
 
-      if (
-        !chat.ownerReplied &&
-        activeSock
-      ) {
-        console.log(
-          `⏰ 1-minute timer expired for +${from}`
-        );
+        if (
+          isBlockedForSession(
+            sessionKey,
+            from
+          )
+        ) {
+          console.log(
+            `🚫 +${from} is blocked. NO AI REPLY.`
+          );
+
+          return;
+        }
+
+        // ======================================================
+        // OWNER REPLIED
+        // ======================================================
+
+        if (
+          chat.ownerReplied
+        ) {
+          console.log(
+            `👑 Owner already replied to +${from}. NO AI REPLY.`
+          );
+
+          return;
+        }
+
+        // ======================================================
+        // SOCKET CHECK
+        // ======================================================
+
+        if (!activeSock) {
+          console.log(
+            `❌ No active Baileys socket for +${from}`
+          );
+
+          return;
+        }
+
+        // ======================================================
+        // AI TAKES OVER
+        // ======================================================
 
         console.log(
-          `🤖 Owner did not reply. AI bot taking over.`
+          `🤖 Owner did not reply after 1 minute. AI TAKING OVER for +${from}`
         );
 
         chat.botActive = true;
@@ -684,6 +937,25 @@ function startFallbackTimer(
           "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you please?";
 
         try {
+          // ====================================================
+          // FINAL BLOCK CHECK BEFORE SENDING
+          // ====================================================
+
+          if (
+            isBlockedForSession(
+              sessionKey,
+              from
+            )
+          ) {
+            console.log(
+              `🚫 FINAL BLOCK CHECK: +${from} is blocked.`
+            );
+
+            chat.botActive = false;
+
+            return;
+          }
+
           await activeSock.sendMessage(
             jid,
             {
@@ -697,8 +969,12 @@ function startFallbackTimer(
           });
 
           console.log(
-            `🤖 Fallback message sent to +${from}`
+            `🤖 AI takeover message sent to +${from}`
           );
+
+          // ====================================================
+          // AI REPLY
+          // ====================================================
 
           if (
             chat.lastCustomerMessage
@@ -708,16 +984,36 @@ function startFallbackTimer(
                 chat.messages
               );
 
+            // Final block check again
+            if (
+              isBlockedForSession(
+                sessionKey,
+                from
+              )
+            ) {
+              console.log(
+                `🚫 +${from} became blocked before AI reply.`
+              );
+
+              chat.botActive =
+                false;
+
+              return;
+            }
+
             chat.messages.push({
               role: "assistant",
               text: aiReply
             });
 
             if (
-              chat.messages.length > 20
+              chat.messages.length >
+              20
             ) {
               chat.messages =
-                chat.messages.slice(-20);
+                chat.messages.slice(
+                  -20
+                );
             }
 
             await activeSock.sendMessage(
@@ -727,18 +1023,31 @@ function startFallbackTimer(
               }
             );
 
+            console.log("");
             console.log(
-              `🤖 AI replied to +${from}: "${aiReply}"`
+              "🤖 AI REPLY AFTER 1 MINUTE"
+            );
+
+            console.log(
+              `📱 To: +${from}`
+            );
+
+            console.log(
+              `💬 "${aiReply}"`
             );
           }
         } catch (err) {
           console.error(
-            `❌ Failed to send fallback reply to +${from}:`,
+            `❌ Failed to send AI fallback to +${from}:`,
             err?.message || err
           );
+
+          chat.botActive =
+            false;
         }
-      }
-    }, FALLBACK_DELAY_MS);
+      },
+      FALLBACK_DELAY_MS
+    );
 }
 
 // ============================================================
@@ -752,6 +1061,7 @@ async function startBaileysClient(
 ) {
   try {
     console.log("");
+
     console.log(
       "================================================"
     );
@@ -802,8 +1112,6 @@ async function startBaileysClient(
 
         auth: state,
 
-        // IMPORTANT:
-        // Do not print QR in Render logs.
         printQRInTerminal: false,
 
         logger: pino({
@@ -820,9 +1128,11 @@ async function startBaileysClient(
 
         markOnlineOnConnect: true,
 
-        getMessage: async () => ({
-          conversation: "Hello"
-        })
+        getMessage:
+          async () => ({
+            conversation:
+              "Hello"
+          })
       });
 
     baileysSessions[
@@ -860,7 +1170,7 @@ async function startBaileysClient(
             `👉 Open /qr on your Render app to scan it.`
           );
 
-          // QR itself is NOT printed.
+          // QR NOT printed in logs.
         }
 
         if (
@@ -883,8 +1193,9 @@ async function startBaileysClient(
           ].qr = null;
 
           console.log("");
+
           console.log(
-            `✅ BAILEYS CONNECTED`
+            "✅ BAILEYS CONNECTED"
           );
 
           console.log(
@@ -906,8 +1217,9 @@ async function startBaileysClient(
           ].connected = false;
 
           console.log("");
+
           console.log(
-            `❌ BAILEYS DISCONNECTED`
+            "❌ BAILEYS DISCONNECTED"
           );
 
           console.log(
@@ -919,7 +1231,7 @@ async function startBaileysClient(
           );
 
           console.log(
-            `Reason:`,
+            "Reason:",
             lastDisconnect
               ?.error
               ?.message ||
@@ -930,13 +1242,16 @@ async function startBaileysClient(
             "🔄 Reconnecting in 5 seconds..."
           );
 
-          setTimeout(() => {
-            startBaileysClient(
-              sessionKey,
-              phoneNumber,
-              authFolder
-            );
-          }, 5000);
+          setTimeout(
+            () => {
+              startBaileysClient(
+                sessionKey,
+                phoneNumber,
+                authFolder
+              );
+            },
+            5000
+          );
         }
       }
     );
@@ -952,12 +1267,13 @@ async function startBaileysClient(
         type
       }) => {
         console.log("");
+
         console.log(
           "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         );
 
         console.log(
-          `📩 BAILEYS MESSAGE EVENT`
+          "📩 BAILEYS MESSAGE EVENT"
         );
 
         console.log(
@@ -976,16 +1292,24 @@ async function startBaileysClient(
           "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         );
 
-        for (const msg of messages) {
+        for (
+          const msg of messages
+        ) {
           try {
             // ==================================================
-            // RAW MESSAGE INFORMATION
+            // RAW INFORMATION
             // ==================================================
 
-            const jid =
+            const rawJid =
               msg.key?.remoteJid;
 
+            const fromMe =
+              Boolean(
+                msg.key?.fromMe
+              );
+
             console.log("");
+
             console.log(
               "----------------------------------------"
             );
@@ -999,18 +1323,18 @@ async function startBaileysClient(
             );
 
             console.log(
-              `📍 JID: ${jid || "Unknown"}`
+              `📍 Raw JID: ${rawJid || "Unknown"}`
             );
 
             console.log(
-              `👤 From me: ${msg.key?.fromMe}`
+              `👤 From me: ${fromMe}`
             );
 
             // ==================================================
-            // JID CHECK
+            // NO JID
             // ==================================================
 
-            if (!jid) {
+            if (!rawJid) {
               console.log(
                 "⚠️ No remoteJid. Ignoring."
               );
@@ -1018,8 +1342,13 @@ async function startBaileysClient(
               continue;
             }
 
+            // ==================================================
+            // STATUS
+            // ==================================================
+
             if (
-              jid === "status@broadcast"
+              rawJid ===
+              "status@broadcast"
             ) {
               console.log(
                 "⏭️ Status message ignored."
@@ -1028,8 +1357,12 @@ async function startBaileysClient(
               continue;
             }
 
+            // ==================================================
+            // GROUP
+            // ==================================================
+
             if (
-              jid.includes("@g.us")
+              rawJid.includes("@g.us")
             ) {
               console.log(
                 "⏭️ Group message ignored."
@@ -1038,10 +1371,24 @@ async function startBaileysClient(
               continue;
             }
 
-            if (
-              !jid.endsWith(
+            // ==================================================
+            // ONLY PERSONAL CHAT
+            // Accept both phone JID and LID.
+            // ==================================================
+
+            const isPhoneJid =
+              rawJid.endsWith(
                 "@s.whatsapp.net"
-              )
+              );
+
+            const isLidJid =
+              rawJid.endsWith(
+                "@lid"
+              );
+
+            if (
+              !isPhoneJid &&
+              !isLidJid
             ) {
               console.log(
                 "⏭️ Non-personal WhatsApp message ignored."
@@ -1051,19 +1398,34 @@ async function startBaileysClient(
             }
 
             // ==================================================
-            // GET PHONE
+            // RESOLVE PHONE
             // ==================================================
 
-            const from =
-              jid.replace(
-                "@s.whatsapp.net",
-                ""
+            const resolved =
+              await resolveSenderNumber(
+                sock,
+                msg
               );
 
-            const fromMe =
-              Boolean(
-                msg.key?.fromMe
+            if (!resolved) {
+              console.log(
+                `⚠️ Could not resolve ${rawJid} to a phone number.`
               );
+
+              console.log(
+                "⚠️ Message logged but no automatic reply will be sent."
+              );
+
+              continue;
+            }
+
+            const from =
+              resolved.phone;
+
+            // IMPORTANT:
+            // Always use the resolved phone JID for replies.
+            const replyJid =
+              resolved.jid;
 
             const label =
               sessionKey === "main"
@@ -1075,11 +1437,15 @@ async function startBaileysClient(
             );
 
             console.log(
+              `🔗 JID source: ${resolved.source}`
+            );
+
+            console.log(
               `📌 Account: ${label}`
             );
 
             // ==================================================
-            // EXTRACT MESSAGE
+            // EXTRACT TEXT
             // ==================================================
 
             let text = "";
@@ -1108,8 +1474,7 @@ async function startBaileysClient(
 
             // ==================================================
             // BLOCK CHECK
-            // IMPORTANT:
-            // Do this BEFORE any timer or AI reply.
+            // DO THIS BEFORE TIMER/AI
             // ==================================================
 
             if (
@@ -1119,8 +1484,9 @@ async function startBaileysClient(
               )
             ) {
               console.log("");
+
               console.log(
-                `🚫 BLOCKED NUMBER DETECTED`
+                "🚫 BLOCKED NUMBER DETECTED"
               );
 
               console.log(
@@ -1132,11 +1498,11 @@ async function startBaileysClient(
               );
 
               console.log(
-                "🚫 NO REPLY WILL BE SENT."
+                "🚫 NO REPLY"
               );
 
               console.log(
-                "🚫 NO FALLBACK TIMER WILL START."
+                "🚫 NO TIMER"
               );
 
               continue;
@@ -1144,6 +1510,11 @@ async function startBaileysClient(
 
             // ==================================================
             // OWNER MESSAGE
+            //
+            // fromMe=true means the connected WhatsApp account
+            // sent this message.
+            //
+            // This is what cancels the 1-minute timer.
             // ==================================================
 
             if (fromMe) {
@@ -1158,6 +1529,10 @@ async function startBaileysClient(
               chat.botActive =
                 false;
 
+              chat.lastJid =
+                replyJid;
+
+              // Cancel timer
               if (
                 chat.fallbackTimer
               ) {
@@ -1169,7 +1544,11 @@ async function startBaileysClient(
                   null;
 
                 console.log(
-                  `⏹️ Timer cancelled because owner replied to +${from}`
+                  `⏹️ TIMER CANCELLED`
+                );
+
+                console.log(
+                  `👑 Owner replied to +${from}`
                 );
               }
 
@@ -1178,15 +1557,26 @@ async function startBaileysClient(
                   role: "assistant",
                   text
                 });
+
+                if (
+                  chat.messages.length >
+                  20
+                ) {
+                  chat.messages =
+                    chat.messages.slice(
+                      -20
+                    );
+                }
               }
 
               console.log("");
+
               console.log(
-                `👑 OWNER MESSAGE`
+                "👑 OWNER MESSAGE"
               );
 
               console.log(
-                `📱 Number: +${from}`
+                `📱 Customer chat: +${from}`
               );
 
               console.log(
@@ -1194,7 +1584,7 @@ async function startBaileysClient(
               );
 
               console.log(
-                "🤖 Bot will remain inactive while owner is responding."
+                "🤖 AI will remain inactive because owner replied."
               );
 
               continue;
@@ -1224,6 +1614,7 @@ async function startBaileysClient(
             // ==================================================
 
             console.log("");
+
             console.log(
               "📨 CUSTOMER MESSAGE"
             );
@@ -1244,6 +1635,9 @@ async function startBaileysClient(
               getPersonalChat(
                 from
               );
+
+            chat.lastJid =
+              replyJid;
 
             chat.messages.push({
               role: "customer",
@@ -1292,6 +1686,20 @@ async function startBaileysClient(
                 `🤖 Bot already active for +${from}`
               );
 
+              // Final blocked check
+              if (
+                isBlockedForSession(
+                  sessionKey,
+                  from
+                )
+              ) {
+                console.log(
+                  `🚫 +${from} is blocked. No AI reply.`
+                );
+
+                continue;
+              }
+
               const reply =
                 await askAI(
                   chat.messages
@@ -1312,16 +1720,31 @@ async function startBaileysClient(
                   );
               }
 
+              // Final block check before sending
+              if (
+                isBlockedForSession(
+                  sessionKey,
+                  from
+                )
+              ) {
+                console.log(
+                  `🚫 +${from} became blocked. AI reply cancelled.`
+                );
+
+                continue;
+              }
+
               await sock.sendMessage(
-                jid,
+                replyJid,
                 {
                   text: reply
                 }
               );
 
               console.log("");
+
               console.log(
-                `🤖 AI REPLY`
+                "🤖 AI REPLY"
               );
 
               console.log(
@@ -1336,16 +1759,14 @@ async function startBaileysClient(
             }
 
             // ==================================================
-            // START FALLBACK TIMER
+            // OWNER NOT YET REPLIED
+            //
+            // START 1-MINUTE TIMER
             // ==================================================
-
-            console.log(
-              `⏱️ Starting 1-minute fallback timer for +${from}`
-            );
 
             startFallbackTimer(
               from,
-              jid,
+              replyJid,
               chat,
               sock,
               label,
@@ -1389,13 +1810,16 @@ async function startBaileysClient(
         error
     );
 
-    setTimeout(() => {
-      startBaileysClient(
-        sessionKey,
-        phoneNumber,
-        authFolder
-      );
-    }, 10000);
+    setTimeout(
+      () => {
+        startBaileysClient(
+          sessionKey,
+          phoneNumber,
+          authFolder
+        );
+      },
+      10000
+    );
   }
 }
 
@@ -1417,7 +1841,8 @@ app.get(
 
     if (
       mode === "subscribe" &&
-      token === WHATSAPP_VERIFY_TOKEN
+      token ===
+        WHATSAPP_VERIFY_TOKEN
     ) {
       return res
         .status(200)
@@ -1468,6 +1893,7 @@ app.post(
       }
 
       console.log("");
+
       console.log(
         "📩 META WHATSAPP MESSAGE"
       );
@@ -1566,9 +1992,14 @@ app.get(
 
     res.send(`
       <html>
+
         <head>
           <title>Blocked Numbers</title>
-          <meta name="viewport" content="width=device-width,initial-scale=1">
+
+          <meta
+            name="viewport"
+            content="width=device-width,initial-scale=1"
+          />
         </head>
 
         <body style="
@@ -1585,25 +2016,38 @@ app.get(
             border-radius:15px;
           ">
 
-            <h1>🚫 Blocked Numbers</h1>
+            <h1>
+              🚫 Blocked Numbers
+            </h1>
 
-            <h2>Main Number</h2>
+            <h2>
+              Main Number
+            </h2>
 
-            <p>${main}</p>
+            <p>
+              ${main}
+            </p>
 
             <hr>
 
-            <h2>Second Number</h2>
+            <h2>
+              Second Number
+            </h2>
 
-            <p>${second}</p>
+            <p>
+              ${second}
+            </p>
 
             <br>
 
-            <a href="/">← Back</a>
+            <a href="/">
+              ← Back
+            </a>
 
           </div>
 
         </body>
+
       </html>
     `);
   }
@@ -1620,7 +2064,10 @@ app.get(
       <html>
 
       <head>
-        <title>Stony_Tech WhatsApp Connections</title>
+
+        <title>
+          Stony_Tech WhatsApp Connections
+        </title>
 
         <meta
           name="viewport"
@@ -1681,7 +2128,9 @@ app.get(
 
         <div class="container">
 
-          <h1>📱 Stony_Tech WhatsApp Connections</h1>
+          <h1>
+            📱 Stony_Tech WhatsApp Connections
+          </h1>
 
           <p>
             Scan the QR code with the corresponding WhatsApp account.
@@ -1750,9 +2199,11 @@ app.get(
         </div>
 
         <script>
+
           setTimeout(() => {
             location.reload();
           }, 15000);
+
         </script>
 
       </body>
@@ -1775,7 +2226,10 @@ app.get(
       <html>
 
       <head>
-        <title>Stony_Tech AI Bot</title>
+
+        <title>
+          Stony_Tech AI Bot
+        </title>
 
         <meta
           name="viewport"
@@ -1844,14 +2298,20 @@ app.get(
   (req, res) => {
     res.status(200).json({
       status: "ok",
-      uptime: process.uptime(),
+
+      uptime:
+        process.uptime(),
 
       baileys: {
         main:
-          baileysSessions.main.connected,
+          baileysSessions
+            .main
+            .connected,
 
         second:
-          baileysSessions.second.connected
+          baileysSessions
+            .second
+            .connected
       }
     });
   }
@@ -1865,6 +2325,7 @@ app.listen(
   PORT,
   () => {
     console.log("");
+
     console.log(
       "=============================================="
     );
@@ -1883,7 +2344,9 @@ app.listen(
 
     startBaileysClient(
       "main",
-      baileysSessions.main.phone,
+      baileysSessions
+        .main
+        .phone,
       AUTH_FOLDER_MAIN
     );
 
@@ -1893,7 +2356,9 @@ app.listen(
 
     startBaileysClient(
       "second",
-      baileysSessions.second.phone,
+      baileysSessions
+        .second
+        .phone,
       AUTH_FOLDER_SEC
     );
   }
