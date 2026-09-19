@@ -46,10 +46,10 @@ const WHATSAPP_VERIFY_TOKEN =
 // ============================================================
 
 const GEMINI_MODEL =
-  process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  process.env.GEMINI_MODEL || gemini-3.6-flash";
 
 const GROQ_MODEL =
-  process.env.GROQ_MODEL || "llama3-70b-8192";
+  process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
 const genAI = GEMINI_API_KEY
   ? new GoogleGenAI({
