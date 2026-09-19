@@ -28,7 +28,7 @@ const {
   WHATSAPP_VERIFY_TOKEN,
 } = process.env;
 
-if (!GEMINI_API_KEY)            console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GEMINI_API_KEY)             console.warn("⚠️  Missing GEMINI_API_KEY");
 if (!GROQ_API_KEY)             console.warn("⚠️  Missing GROQ_API_KEY");
 if (!WHATSAPP_ACCESS_TOKEN)    console.warn("⚠️  Missing WHATSAPP_ACCESS_TOKEN");
 if (!WHATSAPP_PHONE_NUMBER_ID) console.warn("⚠️  Missing WHATSAPP_PHONE_NUMBER_ID");
@@ -333,7 +333,7 @@ const baileysSessions = {
   second: { phone: "233533161186", qr: null, connected: false, sock: null }
 };
 
-async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNumbers = []) {
+async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
   if (!fs.existsSync(authFolder)) fs.mkdirSync(authFolder, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(authFolder);
@@ -374,7 +374,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
       console.log(`⚠️  Number ${phoneNumber} disconnected. Status: ${statusCode}. Reconnect: ${shouldReconnect}`);
       if (shouldReconnect) {
         console.log(`🔄 Reconnecting ${phoneNumber} in 5 seconds...`);
-        setTimeout(() => startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNumbers), 5000);
+        setTimeout(() => startBaileysClient(sessionKey, phoneNumber, authFolder), 5000);
       } else {
         console.log(`❌ Logged out ${phoneNumber}. Delete ${authFolder} and restart.`);
       }
@@ -392,8 +392,9 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         const fromMe = msg.key.fromMe;
         const from   = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
 
-        // 🚫 STRICT BLOCK CHECK: Ignore blocked numbers completely on Baileys/Personal bot
-        if (isBlocked(from, ignoredNumbers)) {
+        // 🚫 COMBINED BLOCK CHECK: Blocks on both Main & Second Baileys sessions globally
+        const allBlocked = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
+        if (isBlocked(from, allBlocked)) {
           console.log(`🚫 Blocked message ignored on Baileys from: +${from}`);
           continue;
         }
@@ -438,7 +439,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
 
         // Start fallback timer
         chat.ownerReplied = false;
-        startFallbackTimer(from, jid, chat, sock, phoneNumber, ignoredNumbers);
+        startFallbackTimer(from, jid, chat, sock, phoneNumber);
 
       } catch (err) {
         console.error(`Message handler error on ${phoneNumber}:`, err?.message);
@@ -451,12 +452,13 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
 // FALLBACK TIMER
 // ============================================================
 
-function startFallbackTimer(from, jid, chat, activeSock, phoneNumber, ignoredNumbers) {
+function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
   if (chat.fallbackTimer) clearTimeout(chat.fallbackTimer);
 
   chat.fallbackTimer = setTimeout(async () => {
     // Secondary safety check: ensure number wasn't blocked while waiting
-    if (isBlocked(from, ignoredNumbers)) return;
+    const allBlocked = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
+    if (isBlocked(from, allBlocked)) return;
 
     if (!chat.ownerReplied && activeSock) {
       console.log(`⏰ Time passed — bot taking over chat with ${from} via ${phoneNumber}`);
@@ -749,12 +751,8 @@ app.listen(PORT, () => {
   console.log(`🚫 Open /blocked to view blocked numbers`);
 
   // Start Main Number
-  startBaileysClient("main", baileysSessions.main.phone, AUTH_FOLDER_MAIN,
-    BLOCKED_NUMBERS.main
-  );
+  startBaileysClient("main", baileysSessions.main.phone, AUTH_FOLDER_MAIN);
 
   // Start Second Number
-  startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC,
-    BLOCKED_NUMBERS.second
-  );
+  startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC);
 });
