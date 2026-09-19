@@ -258,7 +258,6 @@ Rules:
 async function askAI(messages) {
   const conversation = buildConversationPrompt(messages);
 
-  // Try Gemini First
   if (genAI) {
     try {
       console.log("🔄 Asking Gemini...");
@@ -277,7 +276,6 @@ async function askAI(messages) {
     }
   }
 
-  // Fallback to Groq if Gemini fails or is unconfigured
   if (groq) {
     try {
       console.log("🔄 Asking Groq (Fallback)...");
@@ -350,7 +348,7 @@ function startFallbackTimer(sessionKey, phone, jid) {
   const normalizedPhone = normalizePhone(phone);
 
   if (isBlockedForSession(sessionKey, normalizedPhone)) {
-    console.log(`🚫 Blocked number +${normalizedPhone} — timer NOT started.`);
+    console.log(`🚫 BLOCKED: +${normalizedPhone} — timer aborted.`);
     return;
   }
 
@@ -370,13 +368,8 @@ function startFallbackTimer(sessionKey, phone, jid) {
   chat.fallbackTimer = setTimeout(async () => {
     chat.fallbackTimer = null;
 
-    if (isBlockedForSession(sessionKey, normalizedPhone)) {
-      console.log(`🚫 +${normalizedPhone} is blocked — AI takeover cancelled.`);
-      return;
-    }
-
-    if (chat.ownerReplied) {
-      console.log(`👤 Owner already replied to +${normalizedPhone}.`);
+    if (isBlockedForSession(sessionKey, normalizedPhone) || chat.ownerReplied) {
+      console.log(`🚫 Blocked or owner replied — AI takeover cancelled for +${normalizedPhone}`);
       return;
     }
 
@@ -387,15 +380,9 @@ function startFallbackTimer(sessionKey, phone, jid) {
     }
 
     chat.botActive = true;
-
     const takeoverMessage = "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you please?";
 
     try {
-      if (isBlockedForSession(sessionKey, normalizedPhone) || chat.ownerReplied) {
-        chat.botActive = false;
-        return;
-      }
-
       await session.sock.sendMessage(jid, { text: takeoverMessage });
       saveMessage(chat, "assistant", takeoverMessage);
       console.log(`🤖 AI takeover for +${normalizedPhone}`);
@@ -588,6 +575,12 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
           continue;
         }
 
+        // 🛑 CRITICAL: Check block list immediately!
+        if (isBlockedForSession(sessionKey, from)) {
+          console.log(`🚫 BLOCKED NUMBER DETECTED: +${from} — ignoring completely.`);
+          continue;
+        }
+
         console.log(`From: +${from}`);
 
         if (remoteJid.endsWith("@lid")) {
@@ -607,13 +600,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
             saveMessage(chat, "assistant", text);
             console.log(`🛑 AI disabled for +${from} — owner replied`);
           }
-          continue;
-        }
-
-        if (isBlockedForSession(sessionKey, from)) {
-          console.log(`🚫 BLOCKED: +${from} — no reply, no timer`);
-          cancelFallbackTimer(chat);
-          chat.botActive = false;
           continue;
         }
 
