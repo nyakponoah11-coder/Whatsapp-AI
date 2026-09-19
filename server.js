@@ -27,8 +27,8 @@ const {
   WHATSAPP_VERIFY_TOKEN,
 } = process.env;
 
-if (!GEMINI_API_KEY)             console.warn("⚠️  Missing GEMINI_API_KEY");
-if (!GROQ_API_KEY)             console.warn("⚠️  Missing GROQ_API_KEY");
+if (!GEMINI_API_KEY)              console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GROQ_API_KEY)              console.warn("⚠️  Missing GROQ_API_KEY");
 if (!WHATSAPP_ACCESS_TOKEN)    console.warn("⚠️  Missing WHATSAPP_ACCESS_TOKEN");
 if (!WHATSAPP_PHONE_NUMBER_ID) console.warn("⚠️  Missing WHATSAPP_PHONE_NUMBER_ID");
 if (!WHATSAPP_VERIFY_TOKEN)    console.warn("⚠️  Missing WHATSAPP_VERIFY_TOKEN");
@@ -371,8 +371,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
     printQRInTerminal: false,
     logger: require("pino")({ level: "silent" }),
     browser: [`Stony_Tech Bot (${phoneNumber})`, "Chrome", "1.0.0"],
-    syncFullHistory: false,
-    markOnlineOnConnect: false
+    syncFullHistory: true, // <-- CRITICAL FIX: Forces full message sync frames
+    markOnlineOnConnect: true,
+    getMessage: async (key) => {
+      return { conversation: "Hello" };
+    }
   });
 
   baileysSessions[sessionKey].sock = sock;
@@ -383,6 +386,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
     if (qr) {
       baileysSessions[sessionKey].qr = qr;
+      console.log(`📱 [${sessionKey.toUpperCase()}] New QR Code generated. Visit /qr to scan.`);
     }
 
     if (connection === "open") {
@@ -396,6 +400,12 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log(`⚠️  Baileys [${sessionKey.toUpperCase()} - +${phoneNumber}] disconnected. Status: ${statusCode}. Reconnect: ${shouldReconnect}`);
+      
+      if (statusCode === DisconnectReason.loggedOut) {
+        console.log(`❌ [${sessionKey.toUpperCase()}] Logged out! Please clear auth folder and re-scan QR.`);
+        try { fs.rmSync(authFolder, { recursive: true, force: true }); } catch(e){}
+      }
+
       if (shouldReconnect) {
         console.log(`🔄 Reconnecting [${sessionKey.toUpperCase()}] in 5 seconds...`);
         setTimeout(() => startBaileysClient(sessionKey, phoneNumber, authFolder), 5000);
@@ -403,7 +413,12 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
     }
   });
 
+  // Keep socket alive trap
+  sock.ws.on("CB:iq", (node) => {});
+
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    console.log(`🔥 [BAILEYS EVENT TRIGGERED (${sessionKey.toUpperCase()})] Type: ${type}, Count: ${messages.length}`);
+    
     for (const msg of messages) {
       try {
         const jid = msg.key?.remoteJid;
@@ -416,11 +431,10 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
         const text = extractMessageText(msg.message);
 
-        // DEBUG LOGGING TO ENSURE EVERYTHING HITS THE RENDER LOGS
-        console.log(`🔍 [BAILEYS RAW EVENT (${sessionKey.toUpperCase()})] From: +${from} | FromMe: ${fromMe} | Type: ${type} | Text: "${text}"`);
+        console.log(`🔍 [BAILEYS MESSAGE RAW] From: +${from} | FromMe: ${fromMe} | Text: "${text}"`);
 
         if (!text.trim()) {
-          console.log(`⚠️ [BAILEYS] Ignored non-text or empty message from +${from}`);
+          console.log(`⚠️ [BAILEYS] Ignored empty text message from +${from}`);
           continue;
         }
 
@@ -562,7 +576,6 @@ app.post("/webhook", async (req, res) => {
 
     const label = "Meta Bot";
 
-    // Meta bot is open wide to ALL numbers (no block check)
     console.log(`📥 [OPEN/UNBLOCKED] Incoming text on ${label} from +${from}: "${userText}"`);
 
     const conversation = getBotConversation(from);
