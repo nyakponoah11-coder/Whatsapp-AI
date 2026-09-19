@@ -47,21 +47,25 @@ const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
 
 // ============================================================
-// BLOCKED NUMBERS
+// BLOCKED NUMBERS (For Personal/Baileys Bot only)
 // ============================================================
 
 const BLOCKED_NUMBERS = {
-  main:   ["233599779237", "233550901484", "233599599254","233243682726"],
+  main:   ["233599779237", "233550901484", "233599599254", "233243682726"],
   second: ["233535840183", "233267103209", "233547100951"]
 };
 
 // ============================================================
-// HELPER: CHECK IF NUMBER IS BLOCKED
+// STRICT HELPER: CHECK IF NUMBER IS BLOCKED
 // ============================================================
 
 function isBlocked(from, ignoredList = []) {
-  const cleanFrom = from.replace(/\D/g, "");
-  return ignoredList.some(num => cleanFrom.endsWith(num) || num.endsWith(cleanFrom));
+  if (!from) return false;
+  const cleanFrom = String(from).replace(/\D/g, "");
+  return ignoredList.some(num => {
+    const cleanNum = String(num).replace(/\D/g, "");
+    return cleanFrom === cleanNum || cleanFrom.endsWith(cleanNum) || cleanNum.endsWith(cleanFrom);
+  });
 }
 
 // ============================================================
@@ -388,8 +392,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         const fromMe = msg.key.fromMe;
         const from   = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
 
-        // 🚫 STRICT BLOCK CHECK: Ignore blocked numbers immediately
-        if (isBlocked(from, ignoredNumbers)) continue;
+        // 🚫 STRICT BLOCK CHECK: Ignore blocked numbers completely on Baileys/Personal bot
+        if (isBlocked(from, ignoredNumbers)) {
+          console.log(`🚫 Blocked message ignored on Baileys from: +${from}`);
+          continue;
+        }
 
         const text = msg.message?.conversation ||
                      msg.message?.extendedTextMessage?.text ||
@@ -494,7 +501,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // ============================================================
-// BOT NUMBER WEBHOOK (Meta)
+// BOT NUMBER WEBHOOK (Meta - Allowed to reply to everyone)
 // ============================================================
 
 app.post("/webhook", async (req, res) => {
@@ -507,6 +514,8 @@ app.post("/webhook", async (req, res) => {
     const from     = message.from;
     const userText = message.text?.body?.trim();
     if (!from || !userText) return;
+
+    // Meta bot is allowed to reply (no block checks here)
 
     const conversation = getBotConversation(from);
     conversation.messages.push({ role: "customer", text: userText });
@@ -596,7 +605,7 @@ app.get("/blocked", (req, res) => {
       <head><title>Blocked Numbers</title>${style}</head>
       <body>
         <h1>🚫 Blocked Numbers</h1>
-        <p class="subtitle">These numbers are ignored — the bot will never reply to them.</p>
+        <p class="subtitle">These numbers are ignored by the Baileys/Personal bot — but can still reply on the Meta bot.</p>
 
         <div class="cards">
 
@@ -696,7 +705,7 @@ app.get("/", (req, res) => {
     <html>
       <body style="font-family:sans-serif;padding:40px;background:#f4f4f9;">
         <h2>🚀 Stony_Tech AI Bot</h2>
-        <p>Meta Bot: ✅ Active</p>
+        <p>Meta Bot: ✅ Active (Replies to everyone)</p>
         <p>Main Number (+${baileysSessions.main.phone}):
           ${baileysSessions.main.connected ? "✅ Connected" : "❌ Not connected"}
         </p>
