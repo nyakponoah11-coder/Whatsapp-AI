@@ -102,9 +102,9 @@ const GEMINI_API_KEY =
 const GROQ_API_KEY =
   process.env.GROQ_API_KEY;
 
-const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_MODEL = "gemini-2.5-flash";
 
-const GROQ_MODEL = "llama-3.3-70b-versatile";
+const GROQ_MODEL = "llama3-70b-8192";
 
 const genAI = GEMINI_API_KEY
   ? new GoogleGenAI({
