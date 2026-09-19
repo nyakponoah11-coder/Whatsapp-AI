@@ -455,6 +455,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           await notifyOwner(from, text.trim(), chat, label);
         }
 
+        // If the bot is ALREADY active for this chat, reply immediately
         if (chat.botActive) {
           console.log(`🤖 Bot is already active for +${from}. Generating response...`);
           let reply;
@@ -470,6 +471,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           continue;
         }
 
+        // If bot is not active yet, start/manage the 1-minute fallback timer
         console.log(`⏱️ Starting 1-minute fallback timer for unblocked +${from} on Baileys ${label}...`);
         startFallbackTimer(from, jid, chat, sock, label);
 
