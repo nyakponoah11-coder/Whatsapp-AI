@@ -579,7 +579,7 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
           continue;
         }
 
-        // 🛑 CRITICAL: Check block list immediately!
+        // 🛑 ABSOLUTE BLOCK CHECK: Must be the very first thing checked!
         if (isBlockedForSession(sessionKey, from)) {
           console.log(`🚫 BLOCKED NUMBER DETECTED: +${from} — ignoring completely.`);
           continue;
@@ -620,6 +620,12 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
 
         updateLeadInformation(chat, text);
         if (detectInterest(text)) await notifyOwner(chat, from);
+
+        // 🛑 SAFEGUARD: Double check block before immediate bot reply
+        if (isBlockedForSession(sessionKey, from)) {
+          console.log(`🚫 Blocked number +${from} attempted to trigger active bot. Ignored.`);
+          continue;
+        }
 
         if (chat.botActive) {
           console.log(`🤖 Bot active — replying immediately to +${from}`);
