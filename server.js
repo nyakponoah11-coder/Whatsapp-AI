@@ -28,7 +28,7 @@ const {
   WHATSAPP_VERIFY_TOKEN,
 } = process.env;
 
-if (!GEMINI_API_KEY)           console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GEMINI_API_KEY)            console.warn("⚠️  Missing GEMINI_API_KEY");
 if (!GROQ_API_KEY)             console.warn("⚠️  Missing GROQ_API_KEY");
 if (!WHATSAPP_ACCESS_TOKEN)    console.warn("⚠️  Missing WHATSAPP_ACCESS_TOKEN");
 if (!WHATSAPP_PHONE_NUMBER_ID) console.warn("⚠️  Missing WHATSAPP_PHONE_NUMBER_ID");
@@ -42,7 +42,7 @@ const groq = new Groq({ apiKey: GROQ_API_KEY });
 // ============================================================
 
 const OWNER_NUMBER      = "233547100951";
-const FALLBACK_DELAY_MS = 1 * 60 * 1000; // 7 minutes
+const FALLBACK_DELAY_MS = 1 * 60 * 1000; // 1 minute
 const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
 
@@ -54,6 +54,15 @@ const BLOCKED_NUMBERS = {
   main:   ["233599779237", "233550901484", "233599599254","233243682726"],
   second: ["233535840183", "233267103209", "233547100951"]
 };
+
+// ============================================================
+// HELPER: CHECK IF NUMBER IS BLOCKED
+// ============================================================
+
+function isBlocked(from, ignoredList = []) {
+  const cleanFrom = from.replace(/\D/g, "");
+  return ignoredList.some(num => cleanFrom.endsWith(num) || num.endsWith(cleanFrom));
+}
 
 // ============================================================
 // BUSINESS RULES
@@ -379,8 +388,8 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
         const fromMe = msg.key.fromMe;
         const from   = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
 
-        // 🚫 Ignore blocked numbers
-        if (ignoredNumbers.includes(from)) continue;
+        // 🚫 STRICT BLOCK CHECK: Ignore blocked numbers immediately
+        if (isBlocked(from, ignoredNumbers)) continue;
 
         const text = msg.message?.conversation ||
                      msg.message?.extendedTextMessage?.text ||
@@ -420,9 +429,9 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
           continue;
         }
 
-        // Start 7 min fallback timer
+        // Start fallback timer
         chat.ownerReplied = false;
-        startFallbackTimer(from, jid, chat, sock, phoneNumber);
+        startFallbackTimer(from, jid, chat, sock, phoneNumber, ignoredNumbers);
 
       } catch (err) {
         console.error(`Message handler error on ${phoneNumber}:`, err?.message);
@@ -432,15 +441,18 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder, ignoredNu
 }
 
 // ============================================================
-// 7 MIN FALLBACK TIMER
+// FALLBACK TIMER
 // ============================================================
 
-function startFallbackTimer(from, jid, chat, activeSock, phoneNumber) {
+function startFallbackTimer(from, jid, chat, activeSock, phoneNumber, ignoredNumbers) {
   if (chat.fallbackTimer) clearTimeout(chat.fallbackTimer);
 
   chat.fallbackTimer = setTimeout(async () => {
+    // Secondary safety check: ensure number wasn't blocked while waiting
+    if (isBlocked(from, ignoredNumbers)) return;
+
     if (!chat.ownerReplied && activeSock) {
-      console.log(`⏰ 7 min passed — bot taking over chat with ${from} via ${phoneNumber}`);
+      console.log(`⏰ Time passed — bot taking over chat with ${from} via ${phoneNumber}`);
       chat.botActive = true;
 
       const unavailableMsg = "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you please?";
