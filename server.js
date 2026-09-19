@@ -11,7 +11,6 @@ const {
   fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
-const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const path = require("path");
 
@@ -66,7 +65,6 @@ function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
   if (!from) return false;
   const cleanFrom = String(from).replace(/\D/g, "");
   
-  // Check manual block list only (No faulty 13-digit length traps)
   const matched = ignoredList.some(num => {
     const cleanNum = String(num).replace(/\D/g, "");
     return cleanFrom === cleanNum || cleanFrom.endsWith(cleanNum) || cleanNum.endsWith(cleanFrom);
@@ -268,7 +266,6 @@ Respond to the customer based on the business rules.
 
   const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-  // 1️⃣ Try Gemini First
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const result = await ai.models.generateContent({ model, contents: prompt });
@@ -289,7 +286,6 @@ Respond to the customer based on the business rules.
     }
   }
 
-  // 2️⃣ Fallback to Groq Llama 3
   console.warn("⚠️ Switching to Groq Cloud (Llama 3) fallback...");
   try {
     const chatCompletion = await groq.chat.completions.create({
@@ -371,8 +367,7 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
     if (qr) {
       baileysSessions[sessionKey].qr = qr;
-      console.log(`\n📱 SCAN THIS QR CODE FOR (${phoneNumber}):`);
-      qrcode.generate(qr, { small: true });
+      // QR generation in terminal is now completely disabled. View it via the /qr web page.
     }
 
     if (connection === "open") {
@@ -401,19 +396,16 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
         if (!msg.message || msg.key.remoteJid === "status@broadcast") continue;
 
         const jid = msg.key.remoteJid;
-        // Ignore non-standard extensions completely
         if (!jid.endsWith("@s.whatsapp.net")) continue;
 
         const fromMe = msg.key.fromMe;
         const from   = jid.replace("@s.whatsapp.net", "");
 
-        // 🚫 STRICT GLOBAL BLOCK CHECK
         if (isBlocked(from)) {
           console.log(`🚫 Blocked message ignored on Baileys from: +${from}`);
           continue;
         }
 
-        // 🛠️ Unwraps disappearing / ephemeral messages safely
         const baseMsg = msg.message?.ephemeralMessage?.message || msg.message;
         const text = baseMsg?.conversation ||
                      baseMsg?.extendedTextMessage?.text ||
@@ -426,7 +418,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
         console.log(`📥 Received text from unblocked +${from}: "${text.trim()}"`);
 
-        // ── You replied manually ──────────────────────────
         if (fromMe) {
           const chat = getPersonalChat(from);
           chat.ownerReplied = true;
@@ -440,18 +431,15 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           continue;
         }
 
-        // ── Customer message ──────────────────────────────
         const chat = getPersonalChat(from);
         chat.messages.push({ role: "customer", text: text.trim() });
         chat.lastCustomerMessage = text.trim();
 
-        // Update lead data & check for interest to notify owner via Meta bot
         updateLeadInformation(chat, text.trim());
         if (detectInterest(text.trim())) {
           await notifyOwner(from, text.trim(), chat, `Baileys +${phoneNumber}`);
         }
 
-        // Bot already active → reply immediately
         if (chat.botActive) {
           let reply;
           try {
@@ -465,7 +453,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           continue;
         }
 
-        // Start fallback timer (runs uninterrupted from the first message)
         console.log(`⏱️ Starting 1-minute fallback timer for unblocked +${from}...`);
         startFallbackTimer(from, jid, chat, sock, phoneNumber);
 
@@ -547,7 +534,6 @@ app.post("/webhook", async (req, res) => {
     const userText = message.text?.body?.trim();
     if (!from || !userText) return;
 
-    // 🚫 STRICT GLOBAL BLOCK CHECK
     if (isBlocked(from)) {
       console.log(`🚫 Blocked message ignored on Meta bot from: +${from}`);
       return;
@@ -783,9 +769,6 @@ app.listen(PORT, () => {
   console.log(`👉 Open /qr to scan QR codes`);
   console.log(`🚫 Open /blocked to view blocked numbers`);
 
-  // Start Main Number
   startBaileysClient("main", baileysSessions.main.phone, AUTH_FOLDER_MAIN);
-
-  // Start Second Number
   startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC);
 });
