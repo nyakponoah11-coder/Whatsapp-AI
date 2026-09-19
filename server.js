@@ -5,6 +5,7 @@ const axios = require("axios");
 const fs = require("fs");
 const pino = require("pino");
 
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { Groq } = require("groq-sdk");
 
 const makeWASocket = require("@whiskeysockets/baileys").default;
@@ -78,13 +79,17 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_VERIFY_TOKEN    = process.env.WHATSAPP_VERIFY_TOKEN;
 
 // =====================================================
-// GROQ AI CONFIG
+// AI CONFIG (Gemini Primary, Groq Fallback)
 // =====================================================
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const GROQ_MODEL = "openai/gpt-oss-20b";        
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL   = "gemini-2.5-flash-lite";
 
-const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
+const GROQ_API_KEY   = process.env.GROQ_API_KEY;
+const GROQ_MODEL     = "llama-3.3-70b-versatile";        
+
+const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const groq  = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
 
 // =====================================================
 // MEMORY
@@ -247,30 +252,52 @@ Rules:
 `.trim();
 
 // =====================================================
-// GROQ AI HANDLER
+// AI HANDLER (Gemini First, Groq Fallback)
 // =====================================================
 
 async function askAI(messages) {
-  if (!groq) throw new Error("Groq API key is missing");
-  console.log("🔄 Asking Groq...");
-  try {
-    const conversation = buildConversationPrompt(messages);
-    const completion = await groq.chat.completions.create({
-      model: GROQ_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: conversation }
-      ],
-      temperature: 0.7,
-      max_tokens: 500
-    });
-    const text = completion?.choices?.[0]?.message?.content;
-    if (!text) throw new Error("Groq returned an empty response");
-    return text.trim();
-  } catch (error) {
-    console.error("❌ Groq failed:", error.message);
-    return "Sorry, I'm having a little trouble responding right now. Please try again shortly.";
+  const conversation = buildConversationPrompt(messages);
+
+  // Try Gemini First
+  if (genAI) {
+    try {
+      console.log("🔄 Asking Gemini...");
+      const model = genAI.getGenerativeModel({
+        model: GEMINI_MODEL,
+        systemInstruction: SYSTEM_PROMPT
+      });
+
+      const result = await model.generateContent(conversation);
+      const text = result?.response?.text();
+      if (text) {
+        return text.trim();
+      }
+    } catch (error) {
+      console.warn("⚠️ Gemini failed, falling over to Groq:", error.message);
+    }
   }
+
+  // Fallback to Groq if Gemini fails or is unconfigured
+  if (groq) {
+    try {
+      console.log("🔄 Asking Groq (Fallback)...");
+      const completion = await groq.chat.completions.create({
+        model: GROQ_MODEL,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: conversation }
+        ],
+        temperature: 0.7,
+        max_tokens: 500
+      });
+      const text = completion?.choices?.[0]?.message?.content;
+      if (text) return text.trim();
+    } catch (error) {
+      console.error("❌ Groq fallback also failed:", error.message);
+    }
+  }
+
+  return "Sorry, I'm having a little trouble responding right now. Please try again shortly.";
 }
 
 // =====================================================
@@ -733,13 +760,15 @@ app.get("/blocked", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    aiEngine: "Groq Only",
+    aiEngine: "Gemini (Primary) + Groq (Fallback)",
+    geminiModel: GEMINI_MODEL,
     groqModel: GROQ_MODEL,
     main:   { phone: baileysSessions.main.phone,   connected: baileysSessions.main.connected },
     second: { phone: baileysSessions.second.phone, connected: baileysSessions.second.connected },
     lidMappings: lidToPhone.size,
     personalChats: personalChats.size,
     metaChats: metaChats.size,
+    geminiConfigured: Boolean(GEMINI_API_KEY),
     groqConfigured: Boolean(GROQ_API_KEY)
   });
 });
@@ -751,7 +780,7 @@ app.get("/health", (req, res) => {
 app.get("/", (req, res) => {
   res.send(`<html><body style="font-family:Arial;background:#111;color:white;text-align:center;padding:50px">
     <h1>🤖 Stony_Tech AI Assistant</h1>
-    <p>WhatsApp automation system is running on Groq.</p>
+    <p>WhatsApp automation system is running on Gemini with Groq fallback.</p>
     <p><a href="/qr"     style="color:#00ff88;font-size:20px">📱 Open WhatsApp QR</a></p>
     <p><a href="/blocked" style="color:#ff6b6b;font-size:20px">🚫 Blocked Numbers</a></p>
     <p><a href="/health"  style="color:#00aaff;font-size:20px">❤️  System Health</a></p>
@@ -765,7 +794,7 @@ app.use((req, res) => res.status(404).json({ error: "Route not found" }));
 // =====================================================
 
 app.listen(PORT, () => {
-  console.log(`🚀 Stony_Tech running on port ${PORT} (Groq Powered)`);
+  console.log(`🚀 Stony_Tech running on port ${PORT} (Gemini Powered)`);
   console.log(`📱 Open /qr to scan QR codes`);
   startBaileysClient("main",   baileysSessions.main.phone,   AUTH_FOLDER_MAIN);
   startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC);
