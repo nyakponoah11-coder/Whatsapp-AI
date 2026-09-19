@@ -49,7 +49,7 @@ const baileysSessions = {
 };
 
 // =====================================================
-// LID → PHONE MAPPING (fixes @lid JID issue)
+// LID → PHONE MAPPING
 // =====================================================
 
 const lidToPhone = new Map();
@@ -79,14 +79,14 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_VERIFY_TOKEN    = process.env.WHATSAPP_VERIFY_TOKEN;
 
 // =====================================================
-// AI CONFIG (Gemini Primary, Groq Fallback)
+// AI CONFIG
 // =====================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL   = "gemini-2.5-flash-lite";
 
 const GROQ_API_KEY   = process.env.GROQ_API_KEY;
-const GROQ_MODEL     = "openai/gpt-oss-20b";        
+const GROQ_MODEL     = "openai/gpt-oss-20b";         
 
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 const groq  = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
@@ -142,11 +142,11 @@ function normalizePhone(value) {
 }
 
 // =====================================================
-// BLOCK CHECK
+// BLOCK CHECK (Enhanced to check raw JID / LID strings too)
 // =====================================================
 
-function isBlockedForSession(sessionKey, phone) {
-  const normalized = normalizePhone(phone);
+function isBlockedForSession(sessionKey, identifier) {
+  const normalized = normalizePhone(identifier);
   if (!normalized) return false;
   const blocked = BLOCKED_NUMBERS[sessionKey] || [];
   return blocked.some((number) => {
@@ -186,7 +186,7 @@ function saveMessage(chat, role, content) {
 }
 
 // =====================================================
-// LEAD DETECTION
+// LEAD DETECTION & UPDATE
 // =====================================================
 
 function detectInterest(text) {
@@ -203,10 +203,6 @@ function detectInterest(text) {
   return phrases.some((p) => msg.includes(p));
 }
 
-// =====================================================
-// UPDATE LEAD INFO
-// =====================================================
-
 function updateLeadInformation(chat, text) {
   if (!text) return;
   const msg = text.toLowerCase();
@@ -219,7 +215,7 @@ function updateLeadInformation(chat, text) {
 }
 
 // =====================================================
-// BUILD CONVERSATION PROMPT
+// AI HANDLER
 // =====================================================
 
 function buildConversationPrompt(messages) {
@@ -251,26 +247,18 @@ Rules:
 - Guide interested customers toward getting started with Stony_Tech.
 `.trim();
 
-// =====================================================
-// AI HANDLER (Gemini First, Groq Fallback)
-// =====================================================
-
 async function askAI(messages) {
   const conversation = buildConversationPrompt(messages);
 
   if (genAI) {
     try {
-      console.log("🔄 Asking Gemini...");
       const model = genAI.getGenerativeModel({
         model: GEMINI_MODEL,
         systemInstruction: SYSTEM_PROMPT
       });
-
       const result = await model.generateContent(conversation);
       const text = result?.response?.text();
-      if (text) {
-        return text.trim();
-      }
+      if (text) return text.trim();
     } catch (error) {
       console.warn("⚠️ Gemini failed, falling over to Groq:", error.message);
     }
@@ -278,7 +266,6 @@ async function askAI(messages) {
 
   if (groq) {
     try {
-      console.log("🔄 Asking Groq (Fallback)...");
       const completion = await groq.chat.completions.create({
         model: GROQ_MODEL,
         messages: [
@@ -291,16 +278,12 @@ async function askAI(messages) {
       const text = completion?.choices?.[0]?.message?.content;
       if (text) return text.trim();
     } catch (error) {
-      console.error("❌ Groq fallback also failed:", error.message);
+      console.error("❌ Groq fallback failed:", error.message);
     }
   }
 
-  return "Sorry, I's having a little trouble responding right now. Please try again shortly.";
+  return "Sorry, I'm having a little trouble responding right now. Please try again shortly.";
 }
-
-// =====================================================
-// SEND META MESSAGE
-// =====================================================
 
 async function sendBotMessage(to, text) {
   if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) throw new Error("Meta credentials missing");
@@ -312,44 +295,33 @@ async function sendBotMessage(to, text) {
   return response.data;
 }
 
-// =====================================================
-// NOTIFY OWNER
-// =====================================================
-
 async function notifyOwner(chat, customerPhone) {
   if (chat.leadNotified) return;
   chat.leadNotified = true;
   const message = `🚨 NEW STONY_TECH LEAD\n\n📱 Customer:\n+${customerPhone}\n\n🏢 Business:\n${chat.lead.businessType || "Not identified"}\n\n💡 Requirement:\n${chat.lead.requirement || "Not identified"}\n\nThe customer appears interested in Stony_Tech services.`;
   try {
     await sendBotMessage(OWNER_NUMBER, message.trim());
-    console.log(`📢 Lead notification sent for +${customerPhone}`);
   } catch (error) {
     console.error("❌ Failed to notify owner:", error.response?.data || error.message);
   }
 }
 
-// =====================================================
-// CANCEL FALLBACK TIMER
-// =====================================================
-
 function cancelFallbackTimer(chat) {
   if (chat.fallbackTimer) {
     clearTimeout(chat.fallbackTimer);
     chat.fallbackTimer = null;
-    console.log("🛑 Fallback timer cancelled.");
   }
 }
 
 // =====================================================
-// START FALLBACK TIMER (With Block Check Guard)
+// START FALLBACK TIMER
 // =====================================================
 
 function startFallbackTimer(sessionKey, phone, jid) {
   const normalizedPhone = normalizePhone(phone);
 
-  // Instant exit if already blocked before starting the timer
-  if (isBlockedForSession(sessionKey, normalizedPhone)) {
-    console.log(`🚫 BLOCKED: +${normalizedPhone} — timer aborted.`);
+  if (isBlockedForSession(sessionKey, normalizedPhone) || isBlockedForSession(sessionKey, jid)) {
+    console.log(`🚫 BLOCKED: +${normalizedPhone} / ${jid} — timer aborted.`);
     return;
   }
 
@@ -358,28 +330,21 @@ function startFallbackTimer(sessionKey, phone, jid) {
   if (chat.fallbackTimer) {
     clearTimeout(chat.fallbackTimer);
     chat.fallbackTimer = null;
-    console.log(`🔄 Timer reset for +${normalizedPhone}`);
   }
 
   chat.ownerReplied = false;
   chat.lastJid = jid;
 
-  console.log(`⏳ Timer started for +${normalizedPhone}`);
-
   chat.fallbackTimer = setTimeout(async () => {
     chat.fallbackTimer = null;
 
-    // 🛑 STRICT GUARD: Check block list again right before sending the takeover message!
-    if (isBlockedForSession(sessionKey, normalizedPhone) || chat.ownerReplied) {
+    if (isBlockedForSession(sessionKey, normalizedPhone) || isBlockedForSession(sessionKey, jid) || chat.ownerReplied) {
       console.log(`🚫 Blocked or owner replied — AI takeover cancelled for +${normalizedPhone}`);
       return;
     }
 
     const session = baileysSessions[sessionKey];
-    if (!session?.sock) {
-      console.log(`❌ No socket for ${sessionKey}`);
-      return;
-    }
+    if (!session?.sock) return;
 
     chat.botActive = true;
     const takeoverMessage = "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you please?";
@@ -387,25 +352,21 @@ function startFallbackTimer(sessionKey, phone, jid) {
     try {
       await session.sock.sendMessage(jid, { text: takeoverMessage });
       saveMessage(chat, "assistant", takeoverMessage);
-      console.log(`🤖 AI takeover for +${normalizedPhone}`);
 
-      // Final check before triggering the actual AI response
-      if (chat.ownerReplied || isBlockedForSession(sessionKey, normalizedPhone)) {
+      if (chat.ownerReplied || isBlockedForSession(sessionKey, normalizedPhone) || isBlockedForSession(sessionKey, jid)) {
         chat.botActive = false;
         return;
       }
 
       const aiReply = await askAI(chat.messages);
 
-      // Final check before sending the AI response
-      if (chat.ownerReplied || isBlockedForSession(sessionKey, normalizedPhone)) {
+      if (chat.ownerReplied || isBlockedForSession(sessionKey, normalizedPhone) || isBlockedForSession(sessionKey, jid)) {
         chat.botActive = false;
         return;
       }
 
       await session.sock.sendMessage(jid, { text: aiReply });
       saveMessage(chat, "assistant", aiReply);
-      console.log(`🤖 AI response sent to +${normalizedPhone}`);
 
     } catch (error) {
       console.error(`❌ AI error for +${normalizedPhone}:`, error.message);
@@ -416,26 +377,20 @@ function startFallbackTimer(sessionKey, phone, jid) {
 }
 
 // =====================================================
-// RESOLVE SENDER — FIXED @lid HANDLING
+// RESOLVE SENDER
 // =====================================================
 
 async function resolveSenderNumber(sock, remoteJid, msg) {
   if (remoteJid?.endsWith("@s.whatsapp.net")) {
-    const phone = normalizePhone(remoteJid);
-    return phone;
+    return normalizePhone(remoteJid);
   }
 
   if (remoteJid?.endsWith("@lid")) {
     const cached = phoneFromLid(remoteJid);
-    if (cached) {
-      console.log(`🗂️  LID resolved from cache: +${cached}`);
-      return cached;
-    }
+    if (cached) return cached;
 
     try {
-      const lidMapping = sock?.authState?.creds?.lid ||
-                         sock?.signalRepository?.lidMapping;
-
+      const lidMapping = sock?.authState?.creds?.lid || sock?.signalRepository?.lidMapping;
       if (lidMapping && typeof lidMapping.getPNForLID === "function") {
         const pn = await lidMapping.getPNForLID(remoteJid);
         if (pn) {
@@ -444,24 +399,9 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
           return phone;
         }
       }
-    } catch (err) {
-      console.error("❌ LID API failed:", err.message);
-    }
-
-    try {
-      const contacts = sock?.store?.contacts || {};
-      const contact  = contacts[remoteJid];
-      if (contact?.id) {
-        const phone = normalizePhone(contact.id);
-        saveLidMapping(remoteJid, phone);
-        return phone;
-      }
     } catch (err) {}
 
-    const participant = msg?.participant ||
-                        msg?.key?.participant ||
-                        msg?.key?.remoteJid;
-
+    const participant = msg?.participant || msg?.key?.participant || msg?.key?.remoteJid;
     if (participant && participant.endsWith("@s.whatsapp.net")) {
       const phone = normalizePhone(participant);
       saveLidMapping(remoteJid, phone);
@@ -469,13 +409,10 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
     }
 
     const lidNumber = remoteJid.replace("@lid", "").replace(/\D/g, "");
-    if (lidNumber && lidNumber.length >= 10) {
-      console.log(`⚠️  Using raw LID number as fallback: +${lidNumber}`);
-      return lidNumber;
-    }
+    if (lidNumber && lidNumber.length >= 10) return lidNumber;
   }
 
-  return null;
+  return normalizePhone(remoteJid);
 }
 
 // =====================================================
@@ -493,10 +430,7 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
   try {
     const latest = await fetchLatestBaileysVersion();
     version = latest.version;
-    console.log(`📦 Baileys ${version.join(".")} for ${sessionKey}`);
-  } catch (err) {
-    console.log("⚠️ Could not fetch Baileys version.");
-  }
+  } catch (err) {}
 
   const sock = makeWASocket({
     auth: state,
@@ -513,46 +447,21 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
-
     if (qr) {
       baileysSessions[sessionKey].qr = qr;
       console.log(`📲 QR ready for ${sessionKey} — open /qr`);
     }
-
     if (connection === "open") {
       baileysSessions[sessionKey].connected = true;
       baileysSessions[sessionKey].qr = null;
       console.log(`✅ ${sessionKey} connected.`);
     }
-
     if (connection === "close") {
       baileysSessions[sessionKey].connected = false;
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log(`❌ ${sessionKey} disconnected. Code: ${statusCode}`);
       if (shouldReconnect) {
-        console.log(`🔄 Reconnecting ${sessionKey} in 5s...`);
         setTimeout(() => startBaileysClient(sessionKey, phone, authFolder), 5000);
-      } else {
-        console.log(`🔐 ${sessionKey} logged out. Delete auth folder and re-scan.`);
-      }
-    }
-  });
-
-  sock.ev.on("contacts.update", (contacts) => {
-    for (const contact of contacts) {
-      if (contact.id?.endsWith("@s.whatsapp.net")) {
-        const phone = normalizePhone(contact.id);
-        if (contact.lid) saveLidMapping(contact.lid, phone);
-      }
-    }
-  });
-
-  sock.ev.on("contacts.upsert", (contacts) => {
-    for (const contact of contacts) {
-      if (contact.id?.endsWith("@s.whatsapp.net") && contact.lid) {
-        const phone = normalizePhone(contact.id);
-        saveLidMapping(contact.lid, phone);
       }
     }
   });
@@ -564,28 +473,27 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
 
         const remoteJid = msg.key?.remoteJid;
         if (!remoteJid) continue;
-        if (remoteJid === "status@broadcast") continue;
-        if (remoteJid.endsWith("@g.us")) continue;
+        if (remoteJid === "status@broadcast" || remoteJid.endsWith("@g.us")) continue;
 
         const isPersonal = remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid");
         if (!isPersonal) continue;
 
-        console.log(`\n📩 [${sessionKey}] JID: ${remoteJid} | fromMe: ${msg.key?.fromMe}`);
+        // =========================================================================
+        // 🛑 ULTRA-STRICT BLOCK CHECK (Checks JID, LID digits, and resolved phone)
+        // =========================================================================
+        const rawCleanJid = normalizePhone(remoteJid);
+        if (isBlockedForSession(sessionKey, rawCleanJid) || isBlockedForSession(sessionKey, remoteJid)) {
+          console.log(`🚫 BLOCKED NUMBER / LID DETECTED (${remoteJid}) — ignoring completely.`);
+          continue;
+        }
 
         const from = await resolveSenderNumber(sock, remoteJid, msg);
+        if (!from) continue;
 
-        if (!from) {
-          console.log(`⚠️ Could not resolve number for JID: ${remoteJid}`);
-          continue;
-        }
-
-        // 🛑 ABSOLUTE BLOCK CHECK: Must be the very first thing checked!
         if (isBlockedForSession(sessionKey, from)) {
-          console.log(`🚫 BLOCKED NUMBER DETECTED: +${from} — ignoring completely.`);
+          console.log(`🚫 BLOCKED RESOLVED NUMBER (+${from}) — ignoring completely.`);
           continue;
         }
-
-        console.log(`From: +${from}`);
 
         if (remoteJid.endsWith("@lid")) {
           saveLidMapping(remoteJid, from);
@@ -608,10 +516,7 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
         }
 
         const text = extractMessageText(msg.message);
-        if (!text) {
-          console.log("⚠️ No readable text.");
-          continue;
-        }
+        if (!text) continue;
 
         console.log(`📨 Customer +${from}: "${text}"`);
         saveMessage(chat, "user", text);
@@ -621,9 +526,8 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
         updateLeadInformation(chat, text);
         if (detectInterest(text)) await notifyOwner(chat, from);
 
-        // 🛑 SAFEGUARD: Double check block before immediate bot reply
-        if (isBlockedForSession(sessionKey, from)) {
-          console.log(`🚫 Blocked number +${from} attempted to trigger active bot. Ignored.`);
+        if (isBlockedForSession(sessionKey, from) || isBlockedForSession(sessionKey, remoteJid)) {
+          console.log(`🚫 Blocked check triggered before reply for +${from}. Ignored.`);
           continue;
         }
 
@@ -646,23 +550,18 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
 }
 
 // =====================================================
-// META WEBHOOK VERIFY
+// EXPRESS WEBHOOKS & VIEWS
 // =====================================================
 
 app.get("/webhook", (req, res) => {
-  const mode      = req.query["hub.mode"];
-  const token     = req.query["hub.verify_token"];
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
   if (mode === "subscribe" && token === WHATSAPP_VERIFY_TOKEN) {
-    console.log("✅ Meta webhook verified.");
     return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
-
-// =====================================================
-// META WEBHOOK
-// =====================================================
 
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
@@ -676,12 +575,10 @@ app.post("/webhook", async (req, res) => {
         for (const message of messages) {
           try {
             const from = normalizePhone(message.from);
-            if (!from) continue;
-            if (message.type !== "text") continue;
+            if (!from || message.type !== "text") continue;
             const text = message.text?.body || "";
             if (!text.trim()) continue;
 
-            console.log(`\n📥 META +${from}: "${text}"`);
             const chat = getMetaChat(from);
             chat.lastCustomerMessage = Date.now();
             saveMessage(chat, "user", text);
@@ -692,45 +589,29 @@ app.post("/webhook", async (req, res) => {
             const aiReply = await askAI(chat.messages);
             await sendBotMessage(from, aiReply);
             saveMessage(chat, "assistant", aiReply);
-            console.log(`🤖 Meta reply sent to +${from}`);
-
-          } catch (error) {
-            console.error("❌ Meta message error:", error.response?.data || error.message);
-          }
+          } catch (error) {}
         }
       }
     }
-  } catch (error) {
-    console.error("❌ Meta webhook error:", error.response?.data || error.message);
-  }
+  } catch (error) {}
 });
-
-// =====================================================
-// QR PAGE
-// =====================================================
 
 app.get("/qr", (req, res) => {
   const makeQR = (title, qr, connected) => {
     if (connected) return `<div class="card"><h2>${title}</h2><p class="connected">✅ Connected</p></div>`;
     if (!qr) return `<div class="card"><h2>${title}</h2><p>⏳ Waiting for QR code...</p><meta http-equiv="refresh" content="5"></div>`;
     const qrImage = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" + encodeURIComponent(qr);
-    return `<div class="card"><h2>${title}</h2><p>Scan with WhatsApp → Linked Devices → Link a Device</p><img src="${qrImage}" width="300" height="300" alt="QR"/></div>`;
+    return `<div class="card"><h2>${title}</h2><p>Scan with WhatsApp</p><img src="${qrImage}" width="300" height="300" alt="QR"/></div>`;
   };
   res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Stony_Tech QR</title>
     <style>body{margin:0;padding:30px;font-family:Arial;background:#111;color:white;text-align:center}
-    .card{background:#1d1d1d;padding:25px;margin:25px auto;border-radius:15px;max-width:380px;box-shadow:0 10px 30px rgba(0,0,0,0.4)}
+    .card{background:#1d1d1d;padding:25px;margin:25px auto;border-radius:15px;max-width:380px}
     img{background:white;padding:10px;border-radius:10px;max-width:90%}.connected{color:#00ff88;font-weight:bold}</style></head>
     <body><h1>Stony_Tech WhatsApp</h1>
     ${makeQR("Main Personal Number", baileysSessions.main.qr, baileysSessions.main.connected)}
     ${makeQR("Second Personal Number", baileysSessions.second.qr, baileysSessions.second.connected)}
-    <p style="color:#888;font-size:12px">LID mappings cached: ${lidToPhone.size}</p>
-    <script>setTimeout(()=>location.reload(),10000)</script>
-    </body></html>`);
+    <script>setTimeout(()=>location.reload(),10000)</script></body></html>`);
 });
-
-// =====================================================
-// BLOCKED PAGE
-// =====================================================
 
 app.get("/blocked", (req, res) => {
   const makeList = (numbers) => numbers.length === 0
@@ -740,58 +621,33 @@ app.get("/blocked", (req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>Blocked Numbers</title>
     <style>body{font-family:sans-serif;background:#f4f4f9;padding:30px}
     .card{background:white;border-radius:12px;padding:20px;margin-bottom:20px;max-width:400px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
-    ul{list-style:none;padding:0;margin:0}li{padding:8px 0;border-bottom:1px solid #f0f0f0}li:last-child{border-bottom:none}
+    ul{list-style:none;padding:0;margin:0}li{padding:8px 0;border-bottom:1px solid #f0f0f0}
     a{color:#2563eb;font-size:13px}</style></head>
     <body><h1>🚫 Blocked Numbers</h1>
-    <p style="color:#666;margin-bottom:20px">These numbers get no auto-reply — ever.</p>
     <div class="card"><h2>Main (+${baileysSessions.main.phone})</h2><ul>${makeList(BLOCKED_NUMBERS.main)}</ul></div>
     <div class="card"><h2>Second (+${baileysSessions.second.phone})</h2><ul>${makeList(BLOCKED_NUMBERS.second)}</ul></div>
     <a href="/">← Back</a></body></html>`);
 });
 
-// =====================================================
-// HEALTH
-// =====================================================
-
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    aiEngine: "Gemini (Primary) + Groq (Fallback)",
-    geminiModel: GEMINI_MODEL,
-    groqModel: GROQ_MODEL,
-    main:   { phone: baileysSessions.main.phone,   connected: baileysSessions.main.connected },
+    main:   { phone: baileysSessions.main.phone, connected: baileysSessions.main.connected },
     second: { phone: baileysSessions.second.phone, connected: baileysSessions.second.connected },
-    lidMappings: lidToPhone.size,
-    personalChats: personalChats.size,
-    metaChats: metaChats.size,
-    geminiConfigured: Boolean(GEMINI_API_KEY),
-    groqConfigured: Boolean(GROQ_API_KEY)
+    lidMappings: lidToPhone.size
   });
 });
-
-// =====================================================
-// HOME
-// =====================================================
 
 app.get("/", (req, res) => {
   res.send(`<html><body style="font-family:Arial;background:#111;color:white;text-align:center;padding:50px">
     <h1>🤖 Stony_Tech AI Assistant</h1>
-    <p>WhatsApp automation system is running on Gemini with Groq fallback.</p>
-    <p><a href="/qr"     style="color:#00ff88;font-size:20px">📱 Open WhatsApp QR</a></p>
+    <p><a href="/qr" style="color:#00ff88;font-size:20px">📱 Open WhatsApp QR</a></p>
     <p><a href="/blocked" style="color:#ff6b6b;font-size:20px">🚫 Blocked Numbers</a></p>
-    <p><a href="/health"  style="color:#00aaff;font-size:20px">❤️  System Health</a></p>
   </body></html>`);
 });
 
-app.use((req, res) => res.status(404).json({ error: "Route not found" }));
-
-// =====================================================
-// START
-// =====================================================
-
 app.listen(PORT, () => {
-  console.log(`🚀 Stony_Tech running on port ${PORT} (Gemini Powered)`);
-  console.log(`📱 Open /qr to scan QR codes`);
+  console.log(`🚀 Stony_Tech running on port ${PORT}`);
   startBaileysClient("main",   baileysSessions.main.phone,   AUTH_FOLDER_MAIN);
   startBaileysClient("second", baileysSessions.second.phone, AUTH_FOLDER_SEC);
 });
