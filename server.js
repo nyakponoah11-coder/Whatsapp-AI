@@ -47,7 +47,7 @@ const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
 
 // ============================================================
-// BLOCKED NUMBERS
+// BLOCKED NUMBERS & LIDS
 // ============================================================
 
 const BLOCKED_NUMBERS = {
@@ -59,20 +59,32 @@ const BLOCKED_NUMBERS = {
 const ALL_BLOCKED_NUMBERS = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
 
 // ============================================================
-// STRICT HELPER WITH LOGGING: CHECK IF NUMBER IS BLOCKED
+// SMART HELPER: CHECK IF NUMBER OR LID IS BLOCKED
 // ============================================================
 
 function isBlocked(from, ignoredList = ALL_BLOCKED_NUMBERS) {
   if (!from) return false;
   const cleanFrom = String(from).replace(/\D/g, "");
   
+  // 1. Check manual block list
   const matched = ignoredList.some(num => {
     const cleanNum = String(num).replace(/\D/g, "");
     return cleanFrom === cleanNum || cleanFrom.endsWith(cleanNum) || cleanNum.endsWith(cleanFrom);
   });
 
-  console.log(`🔍 Block Check -> Incoming: "${from}" (Clean: "${cleanFrom}") | Blocked?: ${matched}`);
-  return matched;
+  if (matched) {
+    console.log(`🔍 Block Check -> Incoming: "${from}" | Blocked?: true (Manual List)`);
+    return true;
+  }
+
+  // 2. Auto-block raw WhatsApp LIDs (long numeric strings of 13+ digits)
+  if (cleanFrom.length >= 13) {
+    console.log(`🔍 Block Check -> Incoming: "${from}" | Blocked?: true (Auto-blocked LID format)`);
+    return true;
+  }
+
+  console.log(`🔍 Block Check -> Incoming: "${from}" (Clean: "${cleanFrom}") | Blocked?: false`);
+  return false;
 }
 
 // ============================================================
@@ -394,10 +406,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
         if (!msg.message || msg.key.remoteJid === "status@broadcast") continue;
 
         const jid = msg.key.remoteJid;
-        if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@lid")) continue;
+        // Ignore @lid extensions completely
+        if (!jid.endsWith("@s.whatsapp.net")) continue;
 
         const fromMe = msg.key.fromMe;
-        const from   = jid.replace("@s.whatsapp.net", "").replace("@lid", "");
+        const from   = jid.replace("@s.whatsapp.net", "");
 
         // 🚫 STRICT GLOBAL BLOCK CHECK
         if (isBlocked(from)) {
@@ -522,7 +535,7 @@ app.post("/webhook", async (req, res) => {
     const userText = message.text?.body?.trim();
     if (!from || !userText) return;
 
-    // 🚫 STRICT GLOBAL BLOCK CHECK (Stops Meta bot from replying too)
+    // 🚫 STRICT GLOBAL BLOCK CHECK
     if (isBlocked(from)) {
       console.log(`🚫 Blocked message ignored on Meta bot from: +${from}`);
       return;
@@ -653,7 +666,7 @@ app.get("/blocked", (req, res) => {
 });
 
 // ============================================================
-// QR CODE PAGE
+// QR CODE PAGE (Refreshes every 10 minutes)
 // ============================================================
 
 app.get("/qr", (req, res) => {
@@ -699,8 +712,8 @@ app.get("/qr", (req, res) => {
   html += `</div>`;
 
   html += `
-        <p><small>This page auto-refreshes every 10 seconds.</small></p>
-        <script>setTimeout(() => { location.reload(); }, 10000);</script>
+        <p><small>This page auto-refreshes every 10 minutes.</small></p>
+        <script>setTimeout(() => { location.reload(); }, 600000);</script>
       </body>
     </html>`;
 
