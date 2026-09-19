@@ -401,17 +401,18 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
         const fromMe = msg.key.fromMe;
         const from   = jid.replace("@s.whatsapp.net", "");
-        const label  = sessionKey === "main" ? "Main Personal Number" : "Secondary Personal Number";
+        const label  = sessionKey === "main" ? "Main personal number" : "Secondary personal number";
         const text   = extractMessageText(msg.message);
 
         if (!text.trim()) continue;
 
         // ============================================================
-        // CRITICAL CHECK: BLOCKED NUMBERS MUST SHOW IN LOGS & BE IGNORED
+        // LOGGING & HANDLING FOR BLOCKED NUMBERS
         // ============================================================
         if (isBlocked(from)) {
-          console.log(`🚫 [BLOCKED NUMBER] Message from +${from} on ${label} -> Ignored (Blocked Number). Content: "${text.trim()}"`);
-          continue; // Skips timer, skips bot reply, but strictly logs it!
+          console.log(`Incoming message from this number: +${from}`);
+          console.log(`Blocked number: +${from} on ${label} -> Ignored. No reply given.`);
+          continue;
         }
 
         if (fromMe) {
@@ -423,12 +424,14 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
             chat.fallbackTimer = null;
           }
           chat.messages.push({ role: "assistant", text: text.trim() });
-          console.log(`👤 [OWNER REPLY] Message from this number (+${from}) -> Owner replied manually, timer cleared.`);
+          console.log(`Owner reply from this number (+${from}) -> Owner replied manually, timer cleared.`);
           continue;
         }
 
-        // UNBLOCKED / UNKNOWN NUMBER PROCESSING
-        console.log(`📥 [UNBLOCKED / UNKNOWN NUMBER] Message from +${from} on ${label}: "${text.trim()}"`);
+        // ============================================================
+        // LOGGING & HANDLING FOR UNBLOCKED NUMBERS
+        // ============================================================
+        console.log(`Incoming message from this number: +${from} on ${label}: "${text.trim()}"`);
 
         const chat = getPersonalChat(from);
         chat.messages.push({ role: "customer", text: text.trim() });
@@ -449,11 +452,11 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           chat.messages.push({ role: "assistant", text: reply });
           if (chat.messages.length > 20) chat.messages = chat.messages.slice(-20);
           await sock.sendMessage(jid, { text: reply });
-          console.log(`📤 [BOT REPLY] Replied to unblocked number +${from} on ${label} with: "${reply}"`);
+          console.log(`Baileys bot replied to unblocked number +${from} on ${label} with: "${reply}"`);
           continue;
         }
 
-        console.log(`⏱️ [FALLBACK TIMER] Starting 1-minute timer for unblocked number +${from} on ${label}...`);
+        console.log(`Starting 1-minute fallback timer for unblocked number +${from} on ${label}...`);
         startFallbackTimer(from, jid, chat, sock, label);
 
       } catch (err) {
@@ -478,7 +481,7 @@ function startFallbackTimer(from, jid, chat, activeSock, label) {
     if (isBlocked(from)) return;
 
     if (!chat.ownerReplied && activeSock) {
-      console.log(`⏰ [TIMER EXPIRED] Owner didn't reply within 1 minute. Bot taking over chat with unblocked number +${from} on ${label}`);
+      console.log(`Timer expired after 1 minute. Owner didn't reply. Baileys bot taking over chat with unblocked number +${from} on ${label}`);
       chat.botActive = true;
 
       const unavailableMsg = "Hi! 👋 Stony is not currently available, but I'm the assistant and I'm here to help you.\n\nHow can I assist you please?";
@@ -486,7 +489,7 @@ function startFallbackTimer(from, jid, chat, activeSock, label) {
       try {
         await activeSock.sendMessage(jid, { text: unavailableMsg });
         chat.messages.push({ role: "assistant", text: unavailableMsg });
-        console.log(`📤 [BOT TAKEOVER REPLY] Sent initial automated greeting to +${from}`);
+        console.log(`Baileys bot replied to +${from} with: "${unavailableMsg}"`);
 
         if (chat.lastCustomerMessage) {
           let aiReply;
@@ -497,7 +500,7 @@ function startFallbackTimer(from, jid, chat, activeSock, label) {
           }
           chat.messages.push({ role: "assistant", text: aiReply });
           await activeSock.sendMessage(jid, { text: aiReply });
-          console.log(`📤 [BOT TAKEOVER REPLY] Sent AI follow-up response to +${from} with: "${aiReply}"`);
+          console.log(`Baileys bot replied to +${from} with: "${aiReply}"`);
         }
       } catch (err) {}
     }
@@ -533,7 +536,7 @@ app.post("/webhook", async (req, res) => {
     const userText = message.text?.body?.trim();
     if (!from || !userText) return;
 
-    console.log(`📥 [META BOT] Message from unblocked number +${from}: "${userText}"`);
+    console.log(`Incoming message from this number: +${from} (Meta Bot)`);
 
     const conversation = getBotConversation(from);
     conversation.messages.push({ role: "customer", text: userText });
@@ -556,7 +559,7 @@ app.post("/webhook", async (req, res) => {
     if (conversation.messages.length > 20) conversation.messages = conversation.messages.slice(-20);
 
     await sendBotMessage(from, reply);
-    console.log(`📤 [META BOT] Replied to +${from} with: "${reply}"`);
+    console.log(`Meta bot replied to +${from} with: "${reply}"`);
 
   } catch (err) {}
 });
