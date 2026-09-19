@@ -27,7 +27,7 @@ const {
   WHATSAPP_VERIFY_TOKEN,
 } = process.env;
 
-if (!GEMINI_API_KEY)              console.warn("⚠️  Missing GEMINI_API_KEY");
+if (!GEMINI_API_KEY)             console.warn("⚠️  Missing GEMINI_API_KEY");
 if (!GROQ_API_KEY)              console.warn("⚠️  Missing GROQ_API_KEY");
 if (!WHATSAPP_ACCESS_TOKEN)    console.warn("⚠️  Missing WHATSAPP_ACCESS_TOKEN");
 if (!WHATSAPP_PHONE_NUMBER_ID) console.warn("⚠️  Missing WHATSAPP_PHONE_NUMBER_ID");
@@ -54,7 +54,6 @@ const BLOCKED_NUMBERS = {
   second: ["233535840183", "233267103209", "233547100951"]
 };
 
-// Combine all blocked numbers globally for Baileys
 const ALL_BLOCKED_NUMBERS = [...BLOCKED_NUMBERS.main, ...BLOCKED_NUMBERS.second];
 
 // ============================================================
@@ -407,11 +406,12 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
 
         if (!text.trim()) continue;
 
-        // CHECK BLOCKLIST - Mirroring exact Meta log format style
-        const blocked = isBlocked(from);
-        if (blocked) {
-          console.log(`🚫 [BLOCKED NUMBER] Message from +${from} on ${label} -> Ignored (Blocked Number).`);
-          continue;
+        // ============================================================
+        // CRITICAL CHECK: BLOCKED NUMBERS MUST SHOW IN LOGS & BE IGNORED
+        // ============================================================
+        if (isBlocked(from)) {
+          console.log(`🚫 [BLOCKED NUMBER] Message from +${from} on ${label} -> Ignored (Blocked Number). Content: "${text.trim()}"`);
+          continue; // Skips timer, skips bot reply, but strictly logs it!
         }
 
         if (fromMe) {
@@ -439,7 +439,6 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           await notifyOwner(from, text.trim(), chat, label);
         }
 
-        // If the bot is already active, reply immediately
         if (chat.botActive) {
           let reply;
           try {
@@ -450,11 +449,10 @@ async function startBaileysClient(sessionKey, phoneNumber, authFolder) {
           chat.messages.push({ role: "assistant", text: reply });
           if (chat.messages.length > 20) chat.messages = chat.messages.slice(-20);
           await sock.sendMessage(jid, { text: reply });
-          console.log(`📤 [BOT REPLY] Replied to unblocked number +${from} on ${label}`);
+          console.log(`📤 [BOT REPLY] Replied to unblocked number +${from} on ${label} with: "${reply}"`);
           continue;
         }
 
-        // Start fallback timer
         console.log(`⏱️ [FALLBACK TIMER] Starting 1-minute timer for unblocked number +${from} on ${label}...`);
         startFallbackTimer(from, jid, chat, sock, label);
 
@@ -488,6 +486,7 @@ function startFallbackTimer(from, jid, chat, activeSock, label) {
       try {
         await activeSock.sendMessage(jid, { text: unavailableMsg });
         chat.messages.push({ role: "assistant", text: unavailableMsg });
+        console.log(`📤 [BOT TAKEOVER REPLY] Sent initial automated greeting to +${from}`);
 
         if (chat.lastCustomerMessage) {
           let aiReply;
@@ -498,7 +497,7 @@ function startFallbackTimer(from, jid, chat, activeSock, label) {
           }
           chat.messages.push({ role: "assistant", text: aiReply });
           await activeSock.sendMessage(jid, { text: aiReply });
-          console.log(`📤 [BOT TAKEOVER REPLY] Sent initial automated responses to +${from}`);
+          console.log(`📤 [BOT TAKEOVER REPLY] Sent AI follow-up response to +${from} with: "${aiReply}"`);
         }
       } catch (err) {}
     }
@@ -557,7 +556,7 @@ app.post("/webhook", async (req, res) => {
     if (conversation.messages.length > 20) conversation.messages = conversation.messages.slice(-20);
 
     await sendBotMessage(from, reply);
-    console.log(`📤 [META BOT] Replied to +${from}`);
+    console.log(`📤 [META BOT] Replied to +${from} with: "${reply}"`);
 
   } catch (err) {}
 });
@@ -571,24 +570,69 @@ app.get("/blocked", (req, res) => {
 });
 
 app.get("/qr", (req, res) => {
-  let html = `<html><body><h1>Scan QR Codes</h1>`;
-  if (baileysSessions.main.connected) html += `<p>Main: Connected ✅</p>`;
-  else if (baileysSessions.main.qr) html += `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(baileysSessions.main.qr)}"/>`;
-  
-  if (baileysSessions.second.connected) html += `<p>Second: Connected ✅</p>`;
-  else if (baileysSessions.second.qr) html += `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(baileysSessions.second.qr)}"/>`;
-  html += `</body></html>`;
+  let html = `
+    <html>
+      <head>
+        <title>Scan WhatsApp QRs</title>
+        <style>
+          body { font-family: sans-serif; text-align: center; padding: 20px; background: #f4f4f9; }
+          .card { background: white; padding: 20px; border-radius: 10px;
+                  box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: inline-block;
+                  margin: 15px; width: 320px; vertical-align: top; text-align: center; }
+          img { border-radius: 10px; border: 1px solid #ddd; padding: 10px; background: white; width: 250px; height: 250px; }
+          h2 { color: #333; margin-bottom: 5px; }
+          p.status { font-weight: bold; margin-top: 15px; }
+          a.back { display: block; margin-top: 20px; color: #007bff; text-decoration: none; }
+        </style>
+      </head>
+      <body>
+        <h1>📱 Connect Your Numbers</h1>
+        <p>Open WhatsApp → Linked Devices → Link a Device → Scan</p>
+        <div style="margin-top: 20px;">
+  `;
+
+  // Main Number Card
+  html += `<div class="card"><h2>Main Number</h2><p>+${baileysSessions.main.phone}</p>`;
+  if (baileysSessions.main.connected) {
+    html += `<p class="status" style="color:green;">✅ Connected!</p>`;
+  } else if (baileysSessions.main.qr) {
+    html += `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(baileysSessions.main.qr)}" />`;
+  } else {
+    html += `<p class="status" style="color:#d97706;">⏳ Generating QR...</p>`;
+  }
+  html += `</div>`;
+
+  // Second Number Card
+  html += `<div class="card"><h2>Second Number</h2><p>+${baileysSessions.second.phone}</p>`;
+  if (baileysSessions.second.connected) {
+    html += `<p class="status" style="color:green;">✅ Connected!</p>`;
+  } else if (baileysSessions.second.qr) {
+    html += `<img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(baileysSessions.second.qr)}" />`;
+  } else {
+    html += `<p class="status" style="color:#d97706;">⏳ Generating QR...</p>`;
+  }
+  html += `</div>`;
+
+  html += `
+        </div>
+        <a class="back" href="/">← Back to Dashboard</a>
+        <script>setTimeout(() => { location.reload(); }, 60000);</script>
+      </body>
+    </html>
+  `;
   res.send(html);
 });
 
 app.get("/", (req, res) => {
   res.status(200).send(`
     <html>
-      <body style="font-family:sans-serif;padding:40px;">
+      <body style="font-family:sans-serif;padding:40px;background:#f4f4f9;">
         <h2>🚀 Stony_Tech AI Bot</h2>
-        <p>Main Number: ${baileysSessions.main.connected ? "✅ Connected" : "❌ Disconnected"}</p>
-        <p>Second Number: ${baileysSessions.second.connected ? "✅ Connected" : "❌ Disconnected"}</p>
-        <p><a href="/qr">📱 Scan QR Codes</a> | <a href="/blocked">🚫 Blocked Numbers</a></p>
+        <p>Main Number (+${baileysSessions.main.phone}): ${baileysSessions.main.connected ? "✅ Connected" : "❌ Disconnected"}</p>
+        <p>Second Number (+${baileysSessions.second.phone}): ${baileysSessions.second.connected ? "✅ Connected" : "❌ Disconnected"}</p>
+        <br>
+        <p><a href="/qr">📱 Scan QR Codes</a></p>
+        <p><a href="/blocked">🚫 View Blocked Numbers</a></p>
       </body>
     </html>
   `);
