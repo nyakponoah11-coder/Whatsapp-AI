@@ -86,7 +86,7 @@ const WHATSAPP_VERIFY_TOKEN    = process.env.WHATSAPP_VERIFY_TOKEN;
 // =====================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL   = "gemini-2.5-flash-lite";
+const GEMINI_MODEL   = "gemini-3.5-flash-lite";
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_MODEL   = "openai/gpt-oss-20b";
