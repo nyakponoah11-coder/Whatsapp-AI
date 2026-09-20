@@ -21,40 +21,22 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 const PORT = process.env.PORT || 10000;
 
-// =====================================================
-// CONFIG
-// =====================================================
-
 const OWNER_NUMBER      = "233547100951";
-const FALLBACK_DELAY_MS = 10 * 60 * 1000;
+const FALLBACK_DELAY_MS = 1 * 60 * 1000;
 const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
-
-// =====================================================
-// BLOCKED NUMBERS
-// =====================================================
 
 const BLOCKED_NUMBERS = {
   main:   ["233599779237","233550901484","233599599254","233243682726"],
   second: ["233535840183","233267103209","233547100951"]
 };
 
-// =====================================================
-// BAILEYS SESSIONS
-// =====================================================
-
 const baileysSessions = {
   main:   { phone: "233547100951", qr: null, connected: false, sock: null },
   second: { phone: "233533161186", qr: null, connected: false, sock: null }
 };
 
-// =====================================================
-// LID → PHONE MAPPING
-// =====================================================
-
 const lidToPhone = new Map();
-
-// Also store phone → JID so we can check blocked LIDs
 const phoneToLid = new Map();
 
 function saveLidMapping(lid, phone) {
@@ -73,17 +55,9 @@ function phoneFromLid(lid) {
   return lidToPhone.get(cleanLid) || null;
 }
 
-// =====================================================
-// META CONFIG
-// =====================================================
-
 const WHATSAPP_ACCESS_TOKEN    = process.env.WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_VERIFY_TOKEN    = process.env.WHATSAPP_VERIFY_TOKEN;
-
-// =====================================================
-// AI CONFIG
-// =====================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL   = "gemini-3.5-flash-lite";
@@ -93,10 +67,6 @@ const GROQ_MODEL   = "openai/gpt-oss-20b";
 
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 const groq   = GROQ_API_KEY  ? new Groq({ apiKey: GROQ_API_KEY })     : null;
-
-// =====================================================
-// MEMORY
-// =====================================================
 
 const personalChats = new Map();
 const metaChats     = new Map();
@@ -131,10 +101,6 @@ function getMetaChat(phone) {
   return metaChats.get(phone);
 }
 
-// =====================================================
-// NORMALIZE PHONE
-// =====================================================
-
 function normalizePhone(value) {
   if (!value) return null;
   return String(value)
@@ -145,32 +111,26 @@ function normalizePhone(value) {
 }
 
 // =====================================================
-// BLOCK CHECK
+// BLOCK CHECK — ONLY CHANGE: exact match, no endsWith
 // =====================================================
 
 function isBlockedForSession(sessionKey, identifier) {
   if (!identifier) return false;
   const normalized = normalizePhone(String(identifier));
-  if (!normalized) return false;
+  if (!normalized || normalized.length < 6) return false;
   const blocked = BLOCKED_NUMBERS[sessionKey] || [];
   return blocked.some((number) => {
     const b = normalizePhone(number);
-    return normalized === b || normalized.endsWith(b) || b.endsWith(normalized);
+    if (!b) return false;
+    return normalized === b; // ✅ exact match only
   });
 }
 
-// =====================================================
-// MASTER BLOCK CHECK
-// Checks every possible identifier for a message
-// =====================================================
-
 function isTotallyBlocked(sessionKey, identifiers = []) {
-  return identifiers.some(id => id && isBlockedForSession(sessionKey, id));
+  return identifiers
+    .filter(Boolean)
+    .some(id => isBlockedForSession(sessionKey, id));
 }
-
-// =====================================================
-// EXTRACT MESSAGE TEXT
-// =====================================================
 
 function extractMessageText(message) {
   if (!message) return "";
@@ -188,19 +148,11 @@ function extractMessageText(message) {
   return "";
 }
 
-// =====================================================
-// SAVE MESSAGE
-// =====================================================
-
 function saveMessage(chat, role, content) {
   if (!content) return;
   chat.messages.push({ role, content, timestamp: Date.now() });
   if (chat.messages.length > 30) chat.messages = chat.messages.slice(-30);
 }
-
-// =====================================================
-// LEAD DETECTION & UPDATE
-// =====================================================
 
 function detectInterest(text) {
   if (!text) return false;
@@ -226,10 +178,6 @@ function updateLeadInformation(chat, text) {
   if (msg.includes("delivery")) chat.lead.businessType = "Delivery";
   if (msg.includes("bot") || msg.includes("automation") || msg.includes("whatsapp")) chat.lead.requirement = text;
 }
-
-// =====================================================
-// AI HANDLER
-// =====================================================
 
 function buildConversationPrompt(messages) {
   return messages.slice(-12).map((m) => {
@@ -326,21 +274,16 @@ function cancelFallbackTimer(chat) {
   }
 }
 
-// =====================================================
-// START FALLBACK TIMER
-// =====================================================
-
 function startFallbackTimer(sessionKey, phone, jid) {
   const normalizedPhone = normalizePhone(phone);
 
-  // ✅ BLOCK CHECK: stop before starting timer
-  if (isTotallyBlocked(sessionKey, [normalizedPhone, jid, phone])) {
+  // 🚫 Block check before starting timer
+  if (isTotallyBlocked(sessionKey, [normalizedPhone, phoneFromLid(jid)])) {
     console.log(`🚫 BLOCKED +${normalizedPhone} — timer NOT started.`);
     return;
   }
 
   const chat = getPersonalChat(normalizedPhone);
-
   cancelFallbackTimer(chat);
   chat.ownerReplied = false;
   chat.lastJid = jid;
@@ -350,9 +293,9 @@ function startFallbackTimer(sessionKey, phone, jid) {
   chat.fallbackTimer = setTimeout(async () => {
     chat.fallbackTimer = null;
 
-    // ✅ BLOCK CHECK: inside timer before sending ANYTHING
-    if (isTotallyBlocked(sessionKey, [normalizedPhone, jid, phone])) {
-      console.log(`🚫 BLOCKED +${normalizedPhone} — takeover message suppressed.`);
+    // 🚫 Block check inside timer — catches numbers blocked after timer started
+    if (isTotallyBlocked(sessionKey, [normalizedPhone, phoneFromLid(jid)])) {
+      console.log(`🚫 BLOCKED +${normalizedPhone} — takeover suppressed.`);
       return;
     }
 
@@ -367,8 +310,8 @@ function startFallbackTimer(sessionKey, phone, jid) {
     chat.botActive = true;
 
     try {
-      // ✅ FINAL BLOCK CHECK before sending takeover message
-      if (isTotallyBlocked(sessionKey, [normalizedPhone, jid, phone]) || chat.ownerReplied) {
+      // 🚫 Final check before takeover message
+      if (isTotallyBlocked(sessionKey, [normalizedPhone, phoneFromLid(jid)]) || chat.ownerReplied) {
         chat.botActive = false;
         return;
       }
@@ -378,16 +321,16 @@ function startFallbackTimer(sessionKey, phone, jid) {
       saveMessage(chat, "assistant", takeoverMessage);
       console.log(`🤖 Takeover started for +${normalizedPhone}`);
 
-      // ✅ CHECK AGAIN before AI reply
-      if (isTotallyBlocked(sessionKey, [normalizedPhone, jid, phone]) || chat.ownerReplied) {
+      // 🚫 Check before AI reply
+      if (isTotallyBlocked(sessionKey, [normalizedPhone, phoneFromLid(jid)]) || chat.ownerReplied) {
         chat.botActive = false;
         return;
       }
 
       const aiReply = await askAI(chat.messages);
 
-      // ✅ CHECK AGAIN before sending AI reply
-      if (isTotallyBlocked(sessionKey, [normalizedPhone, jid, phone]) || chat.ownerReplied) {
+      // 🚫 Check before sending AI reply
+      if (isTotallyBlocked(sessionKey, [normalizedPhone, phoneFromLid(jid)]) || chat.ownerReplied) {
         chat.botActive = false;
         return;
       }
@@ -404,21 +347,15 @@ function startFallbackTimer(sessionKey, phone, jid) {
   }, FALLBACK_DELAY_MS);
 }
 
-// =====================================================
-// RESOLVE SENDER
-// =====================================================
-
 async function resolveSenderNumber(sock, remoteJid, msg) {
   if (remoteJid?.endsWith("@s.whatsapp.net")) {
     return normalizePhone(remoteJid);
   }
 
   if (remoteJid?.endsWith("@lid")) {
-    // 1. Check cache
     const cached = phoneFromLid(remoteJid);
     if (cached) return cached;
 
-    // 2. Try Baileys LID API
     try {
       const lidMapping = sock?.authState?.creds?.lid || sock?.signalRepository?.lidMapping;
       if (lidMapping && typeof lidMapping.getPNForLID === "function") {
@@ -431,7 +368,6 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
       }
     } catch (err) {}
 
-    // 3. Try participant field
     const participant = msg?.participant || msg?.key?.participant;
     if (participant && participant.endsWith("@s.whatsapp.net")) {
       const phone = normalizePhone(participant);
@@ -439,7 +375,6 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
       return phone;
     }
 
-    // 4. Use raw LID digits — but mark it as unresolved
     const lidNumber = remoteJid.replace("@lid", "").replace(/\D/g, "");
     if (lidNumber && lidNumber.length >= 10) {
       console.log(`⚠️ Using raw LID digits as phone: +${lidNumber}`);
@@ -449,10 +384,6 @@ async function resolveSenderNumber(sock, remoteJid, msg) {
 
   return normalizePhone(remoteJid);
 }
-
-// =====================================================
-// START BAILEYS CLIENT
-// =====================================================
 
 async function startBaileysClient(sessionKey, phone, authFolder) {
   console.log(`\n🚀 Starting ${sessionKey} WhatsApp...`);
@@ -480,7 +411,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
   baileysSessions[sessionKey].sock = sock;
   sock.ev.on("creds.update", saveCreds);
 
-  // Build LID map from contacts
   sock.ev.on("contacts.upsert", (contacts) => {
     for (const contact of contacts) {
       if (contact.id?.endsWith("@s.whatsapp.net") && contact.lid) {
@@ -523,48 +453,31 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
         const isPersonal = remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@lid");
         if (!isPersonal) continue;
 
-        // ========================================================
-        // ✅ STEP 1: Block check on raw JID BEFORE resolving
-        // This catches LIDs that are already in our blocked+mapped list
-        // ========================================================
-        const rawPhone = normalizePhone(remoteJid);
+        // STEP 1: Block check using cached phone before resolving
         const cachedPhone = remoteJid.endsWith("@lid") ? phoneFromLid(remoteJid) : null;
-
-        if (isTotallyBlocked(sessionKey, [rawPhone, remoteJid, cachedPhone])) {
-          console.log(`🚫 PRE-RESOLVE BLOCK: ${remoteJid} — ignored completely.`);
+        if (isTotallyBlocked(sessionKey, [cachedPhone])) {
+          console.log(`🚫 PRE-RESOLVE BLOCK (cached +${cachedPhone}) — ignored.`);
           continue;
         }
 
-        // ========================================================
-        // ✅ STEP 2: Resolve the real phone number
-        // ========================================================
+        // STEP 2: Resolve real phone number
         const from = await resolveSenderNumber(sock, remoteJid, msg);
         if (!from) continue;
 
-        // ========================================================
-        // ✅ STEP 3: Block check on resolved phone number
-        // This is the definitive check
-        // ========================================================
-        if (isTotallyBlocked(sessionKey, [from, remoteJid, rawPhone])) {
-          console.log(`🚫 POST-RESOLVE BLOCK: +${from} — ignored completely.`);
-
-          // Save the LID mapping so future messages are blocked at step 1
-          if (remoteJid.endsWith("@lid")) {
-            saveLidMapping(remoteJid, from);
-          }
+        // STEP 3: Definitive block check on resolved number
+        if (isTotallyBlocked(sessionKey, [from])) {
+          console.log(`🚫 BLOCKED +${from} — no reply, no timer, nothing.`);
+          if (remoteJid.endsWith("@lid")) saveLidMapping(remoteJid, from);
           continue;
         }
 
-        // Save LID mapping for future fast lookups
-        if (remoteJid.endsWith("@lid")) {
-          saveLidMapping(remoteJid, from);
-        }
+        // Cache LID for future fast blocking
+        if (remoteJid.endsWith("@lid")) saveLidMapping(remoteJid, from);
 
         const chat = getPersonalChat(from);
         chat.jids.add(remoteJid);
         chat.lastJid = remoteJid;
 
-        // ── Owner replied ──────────────────────────────────────
         if (msg.key?.fromMe) {
           const text = extractMessageText(msg.message);
           if (text) {
@@ -588,18 +501,15 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
         updateLeadInformation(chat, text);
         if (detectInterest(text)) await notifyOwner(chat, from);
 
-        // Bot already active → reply immediately
         if (chat.botActive) {
-          // ✅ Block check before immediate reply
-          if (isTotallyBlocked(sessionKey, [from, remoteJid])) continue;
+          if (isTotallyBlocked(sessionKey, [from]) || chat.ownerReplied) continue;
           const aiReply = await askAI(chat.messages);
-          if (isTotallyBlocked(sessionKey, [from, remoteJid]) || chat.ownerReplied) continue;
+          if (isTotallyBlocked(sessionKey, [from]) || chat.ownerReplied) continue;
           await sock.sendMessage(remoteJid, { text: aiReply });
           saveMessage(chat, "assistant", aiReply);
           continue;
         }
 
-        // Start fallback timer
         startFallbackTimer(sessionKey, from, remoteJid);
 
       } catch (error) {
@@ -608,10 +518,6 @@ async function startBaileysClient(sessionKey, phone, authFolder) {
     }
   });
 }
-
-// =====================================================
-// META WEBHOOK
-// =====================================================
 
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -653,10 +559,6 @@ app.post("/webhook", async (req, res) => {
   } catch (error) {}
 });
 
-// =====================================================
-// QR PAGE
-// =====================================================
-
 app.get("/qr", (req, res) => {
   const makeQR = (title, qr, connected) => {
     if (connected) return `<div class="card"><h2>${title}</h2><p class="connected">✅ Connected</p></div>`;
@@ -677,10 +579,6 @@ app.get("/qr", (req, res) => {
     <script>setTimeout(()=>location.reload(),10000)</script></body></html>`);
 });
 
-// =====================================================
-// BLOCKED PAGE
-// =====================================================
-
 app.get("/blocked", (req, res) => {
   const makeList = (numbers) => numbers.length === 0
     ? `<li style="color:#888;font-style:italic">No blocked numbers</li>`
@@ -698,10 +596,6 @@ app.get("/blocked", (req, res) => {
     <a href="/">← Back</a></body></html>`);
 });
 
-// =====================================================
-// HEALTH
-// =====================================================
-
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -715,10 +609,6 @@ app.get("/health", (req, res) => {
   });
 });
 
-// =====================================================
-// HOME
-// =====================================================
-
 app.get("/", (req, res) => {
   res.send(`<html><body style="font-family:Arial;background:#111;color:white;text-align:center;padding:50px">
     <h1>🤖 Stony_Tech AI Assistant</h1>
@@ -730,10 +620,6 @@ app.get("/", (req, res) => {
 });
 
 app.use((req, res) => res.status(404).json({ error: "Route not found" }));
-
-// =====================================================
-// START
-// =====================================================
 
 app.listen(PORT, () => {
   console.log(`🚀 Stony_Tech running on port ${PORT}`);
