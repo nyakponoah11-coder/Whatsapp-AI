@@ -28,7 +28,7 @@ const PORT = process.env.PORT || 10000;
 // =====================================================
 
 const OWNER_NUMBER      = "233547100951";
-const FALLBACK_DELAY_MS = 1 * 60 * 1000;        // owner gets 1 minute to reply first
+const FALLBACK_DELAY_MS = 10 * 60 * 1000;        // owner gets 1 minute to reply first
 const MAX_MESSAGE_AGE_MS = 10 * 60 * 1000;      // ignore stale / history-sync messages
 const AUTH_FOLDER_MAIN  = "./baileys_auth";
 const AUTH_FOLDER_SEC   = "./baileys_auth_second";
